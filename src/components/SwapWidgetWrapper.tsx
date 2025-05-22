@@ -565,7 +565,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (connectorType.toLowerCase().includes('solana') || 
           connectorType.toLowerCase().includes('phantom')) {
         console.log("Connecting Solana wallet");
-        // Special handling for Solana if needed
+        // Set wallet type to Solana Virtual Machine
+        setWalletType('svm');
       }
       await linkWallet();
     } else {
@@ -901,7 +902,13 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
         
         // Get connected wallet address for return address, fallback to default
-        const walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
+        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
+        
+        // For Solana wallets, always use the default destination address
+        if (walletType === 'svm') {
+          console.log('Solana wallet detected, using default destination address for returnAddress')
+          walletAddress = DEFAULT_DESTINATION_ADDRESS
+        }
         
         // Generate a unique reference
         const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
@@ -1096,6 +1103,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                   console.log("Wallet selector triggered:", data)
                   if (data && data.context === 'not_connected') {
                     console.log("Initiating wallet connection flow")
+                    
+                    // Set wallet type directly if it's a Solana wallet
+                    if (data.wallet_type && 
+                        (data.wallet_type.toLowerCase().includes('solana') ||
+                         data.wallet_type.toLowerCase().includes('phantom') ||
+                         data.wallet_type.toLowerCase().includes('svm'))) {
+                      console.log("Setting wallet type to Solana")
+                      setWalletType('svm')
+                    }
+                    
                     handleWalletConnection(data.wallet_type)
                   }
                 }
