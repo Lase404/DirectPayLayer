@@ -35,6 +35,24 @@ const DEFAULT_RATE = 1600
 const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
 const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
 
+// Helper function to detect Solana addresses
+const isSolanaAddress = (address: string): boolean => {
+  // Solana addresses are base58 encoded strings, typically 32-44 characters
+  // They don't start with 0x like Ethereum addresses
+  return typeof address === 'string' && 
+         !address.startsWith('0x') && 
+         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+}
+
+// Helper function to ensure valid return address
+const getValidReturnAddress = (address: string): string => {
+  if (isSolanaAddress(address)) {
+    console.log('Solana address detected, replacing with default destination:', address);
+    return DEFAULT_DESTINATION_ADDRESS;
+  }
+  return address;
+}
+
 // Update the component to accept props
 interface SwapWidgetWrapperProps {
   onSwapSuccess?: (bankDetails?: any) => Promise<string | null>;
@@ -249,6 +267,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               modified = true;
             }
             
+            // Check for returnAddress fields (for Paycrest API)
+            if (body.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(body.returnAddress);
+              if (body.returnAddress !== validReturnAddress) {
+                console.warn(`Replacing Solana returnAddress in API call: ${body.returnAddress} → ${validReturnAddress}`);
+                body.returnAddress = validReturnAddress;
+                modified = true;
+              }
+            }
+            
             // Only replace if modified
             if (modified) {
               init.body = JSON.stringify(body);
@@ -316,6 +344,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               modified = true;
             }
             
+            // Check for returnAddress fields (for Paycrest API)
+            if (parsedBody.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(parsedBody.returnAddress);
+              if (parsedBody.returnAddress !== validReturnAddress) {
+                console.warn(`Replacing Solana returnAddress in XHR: ${parsedBody.returnAddress} → ${validReturnAddress}`);
+                parsedBody.returnAddress = validReturnAddress;
+                modified = true;
+              }
+            }
+            
             // Replace the body if modified
             if (modified) {
               body = JSON.stringify(parsedBody);
@@ -366,6 +404,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             console.warn(`Correcting parameters.user in Axios: ${config.data.parameters.user} → ${destinationAddress}`);
             config.data.parameters.user = destinationAddress;
             modified = true;
+          }
+          
+          // Check for returnAddress fields (for Paycrest API)
+          if (config.data.returnAddress) {
+            const validReturnAddress = getValidReturnAddress(config.data.returnAddress);
+            if (config.data.returnAddress !== validReturnAddress) {
+              console.warn(`Replacing Solana returnAddress in Axios: ${config.data.returnAddress} → ${validReturnAddress}`);
+              config.data.returnAddress = validReturnAddress;
+              modified = true;
+            }
           }
         }
       }
@@ -909,6 +957,9 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           console.log('Solana wallet detected, using default destination address for returnAddress')
           walletAddress = DEFAULT_DESTINATION_ADDRESS
         }
+        
+        // Ensure the wallet address is in a valid format (not Solana format)
+        walletAddress = getValidReturnAddress(walletAddress)
         
         // Generate a unique reference
         const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
