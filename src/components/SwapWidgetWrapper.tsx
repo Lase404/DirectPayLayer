@@ -1124,11 +1124,11 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             {/* Responsive overlay for Naira amount */}
             <div
               ref={overlayRef}
-              className="naira-amount-overlay"
+              className="responsive-overlay"
               style={{
                 position: 'absolute',
                 top: '210px',
-                left: '140px',
+                left: '130px',
                 transform: 'translateX(-50%)',
                 backgroundColor: 'transparent',
                 color: 'black',
@@ -1270,16 +1270,6 @@ if (typeof window !== 'undefined') {
         display: none !important;
       }
       
-      /* Naira amount overlay positioning */
-      .naira-amount-overlay {
-        position: absolute !important;
-        top: 210px !important;
-        left: 50% !important;
-        transform: translateX(-50%) !important;
-        width: 250px !important;
-        text-align: center !important;
-      }
-      
       /* Responsive adjustments for overlay */
       @media (max-width: 480px) {
         .swap-card {
@@ -1287,11 +1277,7 @@ if (typeof window !== 'undefined') {
           border-radius: 12px;
         }
         
-        .responsive-overlay,
-        .naira-amount-overlay {
-          top: 190px !important;
-          left: 50% !important;
-          transform: translateX(-50%) !important;
+        .responsive-overlay {
           width: 220px !important;
         }
       }
@@ -1301,14 +1287,11 @@ if (typeof window !== 'undefined') {
           padding: 16px 12px;
         }
         
-        .responsive-overlay,
-        .naira-amount-overlay {
-          top: 180px !important;
+        .responsive-overlay {
           width: 200px !important;
         }
         
-        .responsive-overlay span,
-        .naira-amount-overlay span {
+        .responsive-overlay span {
           font-size: 1.4rem !important;
           min-width: 200px !important;
         }
@@ -1316,16 +1299,10 @@ if (typeof window !== 'undefined') {
       
       /* Portrait phone styles */
       @media (max-height: 750px) and (max-width: 450px) {
-        .naira-amount-overlay {
-          top: 175px !important;
-        }
       }
       
       /* Small portrait phone styles */
       @media (max-height: 650px) and (max-width: 400px) {
-        .naira-amount-overlay {
-          top: 170px !important;
-        }
       }
     `;
     document.head.appendChild(style);
