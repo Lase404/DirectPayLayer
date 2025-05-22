@@ -12,6 +12,10 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'DirectPay Layer',
   description: 'Offramp your crypto to Naira with ease',
+  icons: {
+    icon: '/Group 1000002391 (3).png',
+    apple: '/Group 1000002391 (3).png',
+  },
 }
 
 export default function RootLayout({
