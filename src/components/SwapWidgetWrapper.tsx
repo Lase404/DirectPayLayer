@@ -1128,7 +1128,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               style={{
                 position: 'absolute',
                 top: '210px',
-                left: '130px',
+                left: '140px',
                 transform: 'translateX(-50%)',
                 backgroundColor: 'transparent',
                 color: 'black',
