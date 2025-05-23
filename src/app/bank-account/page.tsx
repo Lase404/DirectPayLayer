@@ -9,6 +9,38 @@ import { usePrivy } from '@privy-io/react-auth'
 // Add a constant for the API key
 const PAYCREST_API_KEY = "208a4aef-1320-4222-82b4-e3bca8781b4b";
 
+// Helper function to detect Solana addresses
+const isSolanaAddress = (address: string): boolean => {
+  // Handle null/undefined addresses
+  if (!address) return false;
+  
+  // Solana addresses are base58 encoded strings, typically 32-44 characters
+  // They don't start with 0x like Ethereum addresses
+  return typeof address === 'string' && 
+         !address.startsWith('0x') && 
+         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+};
+
+// Helper function to ensure valid return address
+const getValidReturnAddress = (address: string): string => {
+  const DEFAULT_DESTINATION_ADDRESS = "0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF";
+  
+  if (!address) return DEFAULT_DESTINATION_ADDRESS;
+  
+  if (isSolanaAddress(address)) {
+    console.log('Bank page: Solana address detected, replacing with default destination:', address);
+    return DEFAULT_DESTINATION_ADDRESS;
+  }
+  
+  // Verify it's an EVM address format
+  if (!address.startsWith('0x') || address.length !== 42) {
+    console.warn(`Bank page: Non-standard address format detected: ${address}, using default`);
+    return DEFAULT_DESTINATION_ADDRESS;
+  }
+  
+  return address;
+};
+
 export default function BankAccountPage() {
   const { logout, authenticated, login } = usePrivy()
   const [showBankForm, setShowBankForm] = useState(false)
@@ -108,7 +140,11 @@ export default function BankAccountPage() {
         const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders";
         
         // Get connected wallet address for return address, fallback to default
-        const walletAddress = localStorage.getItem('connectedWalletAddress') || "0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF";
+        let walletAddress = localStorage.getItem('connectedWalletAddress') || "0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF";
+        
+        // Ensure the wallet address is in a valid format (not Solana format)
+        walletAddress = getValidReturnAddress(walletAddress);
+        console.log('Using validated wallet address for return:', walletAddress);
         
         // Generate a unique reference
         const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
