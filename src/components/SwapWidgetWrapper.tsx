@@ -142,40 +142,94 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
-        // Check for EVM wallet
+        console.log("Setting up wallet with Privy user:", user);
+        
+        // Check for EVM wallet via viem client first (direct connection)
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
-          console.log("EVM wallet adapted:", adapted);
+          console.log("Direct EVM wallet adapted via viem:", adapted);
           return;
         }
         
-        // Check for Solana wallet in user's linked wallets from Privy
-        console.log("Checking for Solana wallet in Privy user object:", user);
-        
-        // Access the wallets from the user object (Privy API may vary)
+        // Access the wallets from the user object
         // @ts-ignore - The Privy User type might not include wallets property in all versions
-        if (user.wallets && user.wallets.length > 0) {
-          // Look for a Solana wallet
+        const userWallets = user.wallets || [];
+        
+        if (userWallets.length > 0) {
+          console.log("Found wallets in Privy user object:", userWallets);
+          
+          // Look for embedded wallets and connected wallets
           // @ts-ignore
-          const solanaWallet = user.wallets.find((wallet: any) => {
-            // Different Privy versions might structure this differently
-            // Look for any property indicating a Solana wallet
+          const allWallets = [...(user.linkedAccounts || []), ...userWallets];
+          
+          // First, try to find an Ethereum wallet (including Trust Wallet)
+          // @ts-ignore
+          const ethWallet = allWallets.find((wallet: any) => {
+            // Check wallet type
+            const walletStr = JSON.stringify(wallet).toLowerCase();
+            const isEthWallet = 
+              (walletStr.includes('ethereum') || 
+               walletStr.includes('evm') || 
+               walletStr.includes('metamask') ||
+               walletStr.includes('trust') ||
+               walletStr.includes('coinbase') ||
+               (wallet.chainId && [1, 5, 11155111].includes(wallet.chainId))) &&
+              !walletStr.includes('solana') && 
+              !walletStr.includes('phantom');
+            
+            if (isEthWallet) {
+              console.log("Found Ethereum wallet:", wallet);
+            }
+            
+            return isEthWallet;
+          });
+          
+          // Then check for Solana wallets
+          // @ts-ignore
+          const solWallet = allWallets.find((wallet: any) => {
             const walletStr = JSON.stringify(wallet).toLowerCase();
             return walletStr.includes('solana') || 
                    walletStr.includes('phantom') || 
                    walletStr.includes('svm');
           });
           
-          if (solanaWallet) {
-            console.log("Found potential Solana wallet:", solanaWallet);
+          // Prioritize ethereum wallets
+          if (ethWallet) {
+            console.log("Using Ethereum wallet from Privy:", ethWallet);
             
-            // Here you would use your adaptSolanaWallet utility
-            // For now, just log that we found it
+            // Create a simple adapter that matches the expected interface
+            const adaptedWallet = {
+              // @ts-ignore
+              address: ethWallet.address || ethWallet.accounts?.[0]?.address,
+              chainId: 1, // Default to Ethereum mainnet
+              async getAccounts() {
+                // @ts-ignore
+                return [{ address: ethWallet.address || ethWallet.accounts?.[0]?.address }];
+              },
+              async signMessage() {
+                console.warn("signMessage not implemented for adapted Privy wallet");
+                return "";
+              },
+              async signTypedData() {
+                console.warn("signTypedData not implemented for adapted Privy wallet");
+                return "";
+              }
+            };
+            
+            setAdaptedWallet(adaptedWallet);
+            setWalletType('evm');
+            console.log("Adapted Ethereum wallet from Privy:", adaptedWallet);
+          } else if (solWallet) {
+            console.log("Using Solana wallet from Privy:", solWallet);
             setWalletType('svm');
             console.log("Solana wallet detected but not fully implemented");
+          } else {
+            console.log("No suitable wallet found in Privy user object");
           }
+        } else {
+          console.log("No wallets found in Privy user object");
         }
         
       } catch (err) {
@@ -693,16 +747,110 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     if (!authenticated) {
       console.log("User not authenticated, initiating login");
       await login();
-    } else if (connectorType) {
+      // Return here to allow the login process to complete
+      // The setupWallet effect will run after login
+      return;
+    }
+    
+    if (connectorType) {
       console.log("Connecting specific wallet type:", connectorType);
-      // Handle specific connector types if needed
+      
+      // Handle specific connector types
       if (connectorType.toLowerCase().includes('solana') || 
           connectorType.toLowerCase().includes('phantom')) {
         console.log("Connecting Solana wallet");
         // Set wallet type to Solana Virtual Machine
         setWalletType('svm');
+        localStorage.setItem('usingSolanaWallet', 'true');
+      } else if (connectorType.toLowerCase().includes('trust') ||
+                 connectorType.toLowerCase().includes('metamask') ||
+                 connectorType.toLowerCase().includes('coinbase') ||
+                 connectorType.toLowerCase().includes('wallet-connect') ||
+                 connectorType.toLowerCase().includes('evm')) {
+        console.log("Connecting EVM wallet:", connectorType);
+        setWalletType('evm');
+        localStorage.removeItem('usingSolanaWallet');
       }
-      await linkWallet();
+      
+      try {
+        await linkWallet();
+        
+        // Give Privy a moment to update the user object
+        setTimeout(() => {
+          // Re-run setupWallet
+          if (user) {
+            console.log("Re-checking wallets after connection...");
+            // Call setupWallet directly since we're inside an event handler
+            const setupWallet = async () => {
+              try {
+                // @ts-ignore - Access wallets
+                const userWallets = user.wallets || [];
+                console.log("User wallets after connection:", userWallets);
+                
+                // Re-check for the newly connected wallet
+                // Use the same logic as in the setupWallet effect
+                // @ts-ignore
+                const allWallets = [...(user.linkedAccounts || []), ...userWallets];
+                
+                // First check for the wallet type that was requested
+                const walletTypeToFind = connectorType.toLowerCase().includes('solana') ? 'solana' : 'ethereum';
+                
+                // @ts-ignore
+                const wallet = allWallets.find((w: any) => {
+                  const walletStr = JSON.stringify(w).toLowerCase();
+                  
+                  if (walletTypeToFind === 'solana') {
+                    return walletStr.includes('solana') || walletStr.includes('phantom');
+                  } else {
+                    return (walletStr.includes('ethereum') || 
+                            walletStr.includes('evm') || 
+                            walletStr.includes(connectorType.toLowerCase())) &&
+                           !walletStr.includes('solana');
+                  }
+                });
+                
+                if (wallet) {
+                  console.log(`Found ${walletTypeToFind} wallet after connection:`, wallet);
+                  
+                  if (walletTypeToFind !== 'solana') {
+                    // Create adapter for EVM wallet
+                    const adaptedWallet = {
+                      // @ts-ignore
+                      address: wallet.address || wallet.accounts?.[0]?.address,
+                      chainId: 1, // Default to Ethereum mainnet
+                      async getAccounts() {
+                        // @ts-ignore
+                        return [{ address: wallet.address || wallet.accounts?.[0]?.address }];
+                      },
+                      async signMessage() {
+                        console.warn("signMessage not implemented for adapted Privy wallet");
+                        return "";
+                      },
+                      async signTypedData() {
+                        console.warn("signTypedData not implemented for adapted Privy wallet");
+                        return "";
+                      }
+                    };
+                    
+                    setAdaptedWallet(adaptedWallet);
+                    setWalletType('evm');
+                    console.log("Adapted wallet after connection:", adaptedWallet);
+                  } else {
+                    setWalletType('svm');
+                  }
+                }
+              } catch (err) {
+                console.error("Error finding wallet after connection:", err);
+              }
+            };
+            
+            setupWallet();
+          }
+        }, 1000); // Give Privy a second to update
+        
+      } catch (err) {
+        console.error("Error linking wallet:", err);
+      }
     } else {
       console.log("Connecting additional wallet");
       await linkWallet();
@@ -1522,8 +1670,38 @@ if (typeof window !== 'undefined') {
       /* Naira logo replacement */
       .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center img[src*="usdc.png"] {
         content: url('https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75') !important;
+        width: 24px !important;
+        height: 24px !important;
+        object-fit: contain !important;
+        border-radius: 50% !important;
+        display: inline-block !important;
+        vertical-align: middle !important;
       }
-
+      
+      /* Additional mobile fixes for Naira logo */
+      @media (max-width: 480px) {
+        .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center img[src*="usdc.png"] {
+          width: 20px !important;
+          height: 20px !important;
+          margin-right: 4px !important;
+        }
+        
+        /* Fix alignment for flag and token name */
+        .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center {
+          display: flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          gap: 4px !important;
+        }
+        
+        /* Ensure token text is visible properly */
+        .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_16px {
+          font-size: 14px !important;
+          line-height: 1.2 !important;
+          white-space: nowrap !important;
+        }
+      }
+      
       /* Enhanced responsive styles */
       .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center .relay-d_flex.relay-shrink_0.relay-pos_absolute.relay-right_0.relay-bottom_0.relay-rounded_4.relay-overflow_hidden {
         display: none !important;
