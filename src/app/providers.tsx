@@ -70,7 +70,6 @@ function RelayProviders({ children }: { children: React.ReactNode }) {
               showWalletLoginFirst: true,
               walletChainType: 'ethereum-and-solana', // Enable Solana UI elements
               walletList: [
-                'detected_ethereum_wallets',
                 'metamask', 
                 'phantom', 
                 'solflare', 
