@@ -1,7 +1,8 @@
 import axios from 'axios';
+import { generateHmacSignature } from './hmac';
 
-const PAYCREST_API_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
-const PAYCREST_API_URL = 'https://api.paycrest.io/v1'; // Updated URL with v1 path
+const PAYCREST_API_KEY = '208a4aef-1320-4222-82b4-e3bca8781b4b';
+const PAYCREST_API_URL = 'https://api.paycrest.io/v1';
 
 export interface BankAccount {
   id: string;
@@ -137,31 +138,95 @@ export async function getTransactionHistory(userId: string): Promise<any[]> {
 }
 
 // Get NGN rate for USDC (simpler method) based on the provided example
-export async function getRatesForOfframp(): Promise<Record<string, number>> {
+export async function getRatesForOfframp(): Promise<any> {
   try {
-    const response = await axios.get(
-      `${PAYCREST_API_URL}/rates/USDC/1/NGN`,
+    const response = await axios.get(`${PAYCREST_API_URL}/rates/usdc/1/ngn`, {
+      headers: {
+        'API-Key': PAYCREST_API_KEY
+      }
+    });
+    
+    if (response.data.status === 'success') {
+      return {
+        NGN: parseFloat(response.data.data)
+      };
+    }
+    
+    return { NGN: 0 };
+  } catch (error) {
+    console.error('Failed to fetch Paycrest rates:', error);
+    return { NGN: 0 };
+  }
+}
+
+// Verify bank account
+export async function verifyBankAccount(institution: string, accountIdentifier: string): Promise<any> {
+  try {
+    const response = await axios.post(`${PAYCREST_API_URL}/verify-account`, 
+      {
+        institution,
+        accountIdentifier
+      },
       {
         headers: {
-          'Authorization': `Bearer ${PAYCREST_API_KEY}`,
           'Content-Type': 'application/json',
-        },
+          'API-Key': PAYCREST_API_KEY
+        }
       }
     );
     
-    console.log("Paycrest NGN rate response:", response.data);
-    
-    if (response.data && response.data.status === "success") {
-      // The data field contains the direct exchange rate value
-      const rate = parseFloat(response.data.data);
-      return { NGN: rate };
-    }
-    
-    // Fallback rate if API response format is unexpected
-    return { NGN: 1601.02 };
+    return response.data;
   } catch (error) {
-    console.error('Error getting NGN rate:', error);
-    // Return fallback rate in case of API error
-    return { NGN: 1601.02 };
+    console.error('Failed to verify account:', error);
+    throw error;
+  }
+}
+
+// Create a new order
+export async function createOrder(orderData: any): Promise<any> {
+  try {
+    const response = await axios.post(`${PAYCREST_API_URL}/sender/orders`,
+      orderData,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'API-Key': PAYCREST_API_KEY
+        }
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('Failed to create order:', error);
+    throw error;
+  }
+}
+
+// Check transaction status - to be implemented with proxy API
+export async function checkTransactionStatus(orderId: string): Promise<any> {
+  try {
+    // Note: This would normally call your backend proxy
+    // Since direct calls to Paycrest for status checks aren't available in the client
+    // You would implement a backend endpoint that handles this
+    
+    // For now, this is a mock implementation
+    const mockStatuses = ['pending', 'settled', 'refunded', 'expired'];
+    const randomStatus = mockStatuses[Math.floor(Math.random() * 4)];
+    
+    // In a real implementation, you would:
+    // const response = await axios.get(`/api/transactions/${orderId}`)
+    // return response.data
+    
+    return {
+      status: 'success',
+      data: {
+        id: orderId,
+        status: randomStatus,
+        updatedAt: new Date().toISOString()
+      }
+    };
+  } catch (error) {
+    console.error('Failed to check transaction status:', error);
+    throw error;
   }
 } 

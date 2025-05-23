@@ -11,6 +11,7 @@ import { adaptViemWallet } from '@reservoir0x/relay-sdk'
 import { adaptSolanaWallet } from '@/utils/solanaAdapter'
 import { VersionedTransaction } from '@solana/web3.js'
 import axios from 'axios'
+import TransactionTracker from './TransactionTracker'
 
 // Define token type
 interface Token {
@@ -189,6 +190,15 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
+  
+  // Transaction tracking state
+  const [showTransactionTracker, setShowTransactionTracker] = useState(false)
+  const [currentTransaction, setCurrentTransaction] = useState<{
+    orderId: string | null;
+    amount: number;
+    nairaAmount: string;
+    bankDetails: any;
+  } | null>(null)
   
   // Watch for changes in the receive address
   useEffect(() => {
@@ -680,34 +690,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         handleSwapSuccess()
       }
 
-      // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+      // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, show transaction tracker
       if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
-        console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+        console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, showing transaction tracker')
         // Reset the flag
         setSwapSuccessOccurred(false)
         
-        // Add a small delay to ensure all operations complete before logout
-        setTimeout(() => {
-          if (authenticated && logout) {
-            // Clear local storage
-            localStorage.removeItem('paycrestReceiveAddress')
-            localStorage.removeItem('paycrestOrderId')
-            localStorage.removeItem('paycrestReference')
-            localStorage.removeItem('paycrestValidUntil')
-            localStorage.removeItem('lastOrderTimestamp')
-            
-            // Log the user out
-            logout()
-              .then(() => {
-                console.log('User logged out successfully after swap')
-                // Reload the page to ensure clean state
-                window.location.reload()
-              })
-              .catch(err => {
-                console.error('Failed to log out user:', err)
-              })
-          }
-        }, 1000)
+        // Show transaction tracker if we have transaction details
+        if (currentTransaction) {
+          setShowTransactionTracker(true)
+        }
       }
       
       // Handle wallet selector events
@@ -1239,10 +1231,21 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       const newAddress = await createNewOrder(true)
       console.log('New receive address after successful swap:', newAddress)
       
+      // Parse bank details
+      const bankDetails = JSON.parse(storedBank)
+      
+      // Set current transaction for tracking
+      setCurrentTransaction({
+        orderId: localStorage.getItem('paycrestOrderId'),
+        amount: outputValue,
+        nairaAmount: nairaAmount,
+        bankDetails: bankDetails
+      })
+      
       // If we have a parent success callback, also call it
       if (onSwapSuccess) {
         console.log('Calling parent swap success handler with bank details')
-        await onSwapSuccess(JSON.parse(storedBank))
+        await onSwapSuccess(bankDetails)
       }
     } catch (error) {
       console.error('Failed to create new order after swap:', error)
@@ -1268,34 +1271,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       handleSwapSuccess()
     }
 
-    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, show transaction tracker
     if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
-      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, showing transaction tracker')
       // Reset the flag
       setSwapSuccessOccurred(false)
       
-      // Add a small delay to ensure all operations complete before logout
-      setTimeout(() => {
-        if (authenticated && logout) {
-          // Clear local storage
-          localStorage.removeItem('paycrestReceiveAddress')
-          localStorage.removeItem('paycrestOrderId')
-          localStorage.removeItem('paycrestReference')
-          localStorage.removeItem('paycrestValidUntil')
-          localStorage.removeItem('lastOrderTimestamp')
-          
-          // Log the user out
-          logout()
-            .then(() => {
-              console.log('User logged out successfully after swap')
-              // Reload the page to ensure clean state
-              window.location.reload()
-            })
-            .catch(err => {
-              console.error('Failed to log out user:', err)
-            })
-        }
-      }, 1000)
+      // Show transaction tracker if we have transaction details
+      if (currentTransaction) {
+        setShowTransactionTracker(true)
+      }
     }
     
     // Handle wallet selector events
@@ -1324,104 +1309,127 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 
   return (
     <div className="swap-page-center">
-      <div className="swap-card" ref={containerRef}>
-        {error ? (
-          <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
-            <p>Error: {error}</p>
-            <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
-          </div>
-        ) : (
-          <>
-            <SwapWidget
-              fromToken={fromToken}
-              setFromToken={(token) => token && setFromTokenState(token)}
-              toToken={toToken}
-              setToToken={(token) => token && setToTokenState(token)}
-              lockFromToken={false}
-              lockToToken={true}
-              supportedWalletVMs={['evm', 'svm']}
-              onConnectWallet={handleWalletConnection}
-              defaultToAddress={destinationAddress as `0x${string}`}
-              multiWalletSupportEnabled={true}
-              onSetPrimaryWallet={() => {}}
-              onLinkNewWallet={() => {}}
-              linkedWallets={[]}
-              wallet={adaptedWallet}
-              onAnalyticEvent={handleAnalyticEvent}
-            />
-            
-            {/* Responsive debug info */}
-            <div style={{ 
-              position: 'absolute', 
-              bottom: '8px', 
-              left: '12px', 
-              fontSize: '9px', 
-              color: 'rgba(255,255,255,0.3)',
-              userSelect: 'none',
-              maxWidth: '80%',
-              overflow: 'hidden',
-              whiteSpace: 'nowrap',
-              textOverflow: 'ellipsis'
-            }}>
-              {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
+      {showTransactionTracker && currentTransaction ? (
+        <TransactionTracker 
+          orderId={currentTransaction.orderId}
+          transactionAmount={currentTransaction.amount}
+          nairaAmount={currentTransaction.nairaAmount}
+          bankDetails={currentTransaction.bankDetails}
+          onGoBack={() => {
+            setShowTransactionTracker(false)
+            // Create new order for next transaction
+            createNewOrder(true).catch(err => {
+              console.error('Failed to create new order for next transaction:', err)
+            })
+          }}
+          onNewTransaction={() => {
+            setShowTransactionTracker(false)
+            // Create new order for next transaction
+            createNewOrder(true).catch(err => {
+              console.error('Failed to create new order for next transaction:', err)
+            })
+          }}
+        />
+      ) : (
+        <div className="swap-card" ref={containerRef}>
+          {error ? (
+            <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
+              <p>Error: {error}</p>
+              <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
             </div>
-            
-            {/* Responsive overlay for Naira amount */}
-            <div
-              ref={overlayRef}
-              className="responsive-overlay"
-              style={{
-                position: 'absolute',
-                top: '210px',
-                left: '140px',
-                transform: 'translateX(-50%)',
-                backgroundColor: 'transparent',
-                color: 'black',
-                padding: '8px 16px',
-                borderRadius: '8px',
-                fontWeight: 'bold',
-                fontSize: '2.0rem',
-                zIndex: 1000,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'flex-start',
-                width: '250px',
-                height: '50px',
+          ) : (
+            <>
+              <SwapWidget
+                fromToken={fromToken}
+                setFromToken={(token) => token && setFromTokenState(token)}
+                toToken={toToken}
+                setToToken={(token) => token && setToTokenState(token)}
+                lockFromToken={false}
+                lockToToken={true}
+                supportedWalletVMs={['evm', 'svm']}
+                onConnectWallet={handleWalletConnection}
+                defaultToAddress={destinationAddress as `0x${string}`}
+                multiWalletSupportEnabled={true}
+                onSetPrimaryWallet={() => {}}
+                onLinkNewWallet={() => {}}
+                linkedWallets={[]}
+                wallet={adaptedWallet}
+                onAnalyticEvent={handleAnalyticEvent}
+              />
+              
+              {/* Responsive debug info */}
+              <div style={{ 
+                position: 'absolute', 
+                bottom: '8px', 
+                left: '12px', 
+                fontSize: '9px', 
+                color: 'rgba(255,255,255,0.3)',
+                userSelect: 'none',
+                maxWidth: '80%',
                 overflow: 'hidden',
                 whiteSpace: 'nowrap',
-                maxWidth: 'calc(100% - 40px)'
-              }}
-            >
-              {isLoading || isRateLoading ? (
-                <div style={{
-                  width: '120px',
-                  height: '24px',
-                  background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
-                  backgroundSize: '200% 100%',
-                  animation: 'pulse 1.5s infinite linear',
-                  borderRadius: '4px'
-                }} />
-              ) : (
-                <>
-                  <span style={{ 
-                    fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
-                    transition: 'font-size 0.1s ease',
-                    textAlign: 'left',
-                    display: 'inline-block',
-                    minWidth: '240px',
-                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                    maxWidth: '100%',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis'
-                  }}>
-                    {nairaAmount}
-                  </span>
-                </>
-              )}
-            </div>
-          </>
-        )}
-      </div>
+                textOverflow: 'ellipsis'
+              }}>
+                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
+              </div>
+              
+              {/* Responsive overlay for Naira amount */}
+              <div
+                ref={overlayRef}
+                className="responsive-overlay"
+                style={{
+                  position: 'absolute',
+                  top: '210px',
+                  left: '130px',
+                  transform: 'translateX(-50%)',
+                  backgroundColor: 'transparent',
+                  color: 'black',
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  fontWeight: 'bold',
+                  fontSize: '2.0rem',
+                  zIndex: 1000,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-start',
+                  width: '250px',
+                  height: '50px',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  maxWidth: 'calc(100% - 40px)'
+                }}
+              >
+                {isLoading || isRateLoading ? (
+                  <div style={{
+                    width: '120px',
+                    height: '24px',
+                    background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'pulse 1.5s infinite linear',
+                    borderRadius: '4px'
+                  }} />
+                ) : (
+                  <>
+                    <span style={{ 
+                      fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
+                      transition: 'font-size 0.1s ease',
+                      textAlign: 'left',
+                      display: 'inline-block',
+                      minWidth: '240px',
+                      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {nairaAmount}
+                    </span>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
