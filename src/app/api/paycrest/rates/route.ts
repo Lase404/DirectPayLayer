@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const PAYCREST_API_KEY = '208a4aef-1320-4222-82b4-e3bca8781b4b';
+const PAYCREST_API_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
 
 export async function GET() {
   try {
