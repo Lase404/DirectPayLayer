@@ -176,7 +176,10 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               if (user.wallet.address) {
                 // Using a valid EVM address for returnAddress to avoid Solana format issues
                 const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
-                localStorage.setItem('connectedWalletAddress', DEFAULT_DESTINATION_ADDRESS);
+                
+                // IMPORTANT: Store this as the paycrestReturnAddress, NOT as the connectedWalletAddress
+                // This ensures it's only used for Paycrest API calls and not for Relay
+                localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
                 
                 // Still create adapter for Solana to show as connected in UI
                 // @ts-ignore - Using type assertion to override TypeScript checking for Solana adapter
@@ -311,7 +314,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             
             // For Solana wallets, use default EVM address for returnAddress
             const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
-            localStorage.setItem('connectedWalletAddress', DEFAULT_DESTINATION_ADDRESS);
+            localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
             localStorage.setItem('usingSolanaWallet', 'true');
             
             try {
@@ -432,7 +435,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               body = JSON.parse(init.body);
               
               if (body.returnAddress) {
-                const validReturnAddress = getValidReturnAddress(body.returnAddress);
+                // Use the stored paycrestReturnAddress for Solana wallets
+                const isSolanaWallet = localStorage.getItem('usingSolanaWallet') === 'true';
+                const validReturnAddress = isSolanaWallet
+                  ? (localStorage.getItem('paycrestReturnAddress') || DEFAULT_DESTINATION_ADDRESS)
+                  : getValidReturnAddress(body.returnAddress);
+                
                 if (body.returnAddress !== validReturnAddress) {
                   console.warn(`Replacing possibly invalid returnAddress in Paycrest API: ${body.returnAddress} → ${validReturnAddress}`);
                   body.returnAddress = validReturnAddress;
@@ -475,8 +483,11 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (url.includes('api.relay') || url.includes('quote')) {
         console.log("Intercepting Relay API call:", url);
         
+        // Get the current receiveAddress from Paycrest order
+        const paycrestReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
+        
         // If it has a body, enforce our destination address
-        if (init && init.body) {
+        if (init && init.body && paycrestReceiveAddress) {
           let body;
           try {
             // Parse the body
@@ -485,48 +496,33 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             let modified = false;
             
             // FORCE the recipient in ALL places it could appear
+            // Use the paycrestReceiveAddress for Relay recipient
             // Direct recipient field
-            if (body.recipient !== destinationAddress) {
-              console.warn(`Correcting recipient in API call: ${body.recipient} → ${destinationAddress}`);
-              body.recipient = destinationAddress;
+            if (body.recipient !== paycrestReceiveAddress) {
+              console.warn(`Correcting recipient in API call: ${body.recipient} → ${paycrestReceiveAddress}`);
+              body.recipient = paycrestReceiveAddress;
               modified = true;
             }
             
             // Check for nested recipient
-            if (body.params && body.params.recipient !== destinationAddress) {
-              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${destinationAddress}`);
-              body.params.recipient = destinationAddress;
+            if (body.params && body.params.recipient !== paycrestReceiveAddress) {
+              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${paycrestReceiveAddress}`);
+              body.params.recipient = paycrestReceiveAddress;
               modified = true;
             }
             
             // Check for parameters.recipient
-            if (body.parameters && body.parameters.recipient !== destinationAddress) {
-              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${destinationAddress}`);
-              body.parameters.recipient = destinationAddress;
+            if (body.parameters && body.parameters.recipient !== paycrestReceiveAddress) {
+              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${paycrestReceiveAddress}`);
+              body.parameters.recipient = paycrestReceiveAddress;
               modified = true;
             }
             
             // Check for user field which sometimes doubles as recipient
-            if (body.parameters && body.parameters.user && body.parameters.user !== destinationAddress) {
-              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${destinationAddress}`);
-              body.parameters.user = destinationAddress;
+            if (body.parameters && body.parameters.user && body.parameters.user !== paycrestReceiveAddress) {
+              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${paycrestReceiveAddress}`);
+              body.parameters.user = paycrestReceiveAddress;
               modified = true;
-            }
-            
-            // Check for hash parameter which might contain the destination 
-            if (url.includes('hash=') && !url.includes(destinationAddress)) {
-              console.warn(`URL contains hash parameter but not correct destination: ${url}`);
-              // We don't modify the URL directly but log for debugging
-            }
-            
-            // Check for returnAddress fields (for Paycrest API)
-            if (body.returnAddress) {
-              const validReturnAddress = getValidReturnAddress(body.returnAddress);
-              if (body.returnAddress !== validReturnAddress) {
-                console.warn(`Replacing Solana returnAddress in API call: ${body.returnAddress} → ${validReturnAddress}`);
-                body.returnAddress = validReturnAddress;
-                modified = true;
-              }
             }
             
             // Only replace if modified
@@ -874,6 +870,10 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         // Set wallet type to Solana Virtual Machine
         setWalletType('svm');
         localStorage.setItem('usingSolanaWallet', 'true');
+        
+        // For Solana wallets, always store the default EVM address for Paycrest
+        const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
+        localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
       } else if (connectorType.toLowerCase().includes('trust') ||
                  connectorType.toLowerCase().includes('metamask') ||
                  connectorType.toLowerCase().includes('coinbase') ||
@@ -882,6 +882,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         console.log("Connecting EVM wallet:", connectorType);
         setWalletType('evm');
         localStorage.removeItem('usingSolanaWallet');
+        localStorage.removeItem('paycrestReturnAddress');
       }
       
       try {
@@ -1249,13 +1250,17 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // If we reach here, either forceCreate is true or we need a new order
       console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
       
-      // Get connected wallet address for return address, fallback to default
-      let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
+      // MODIFIED: Check for Solana wallet first, then use the appropriate return address
+      const isSolanaWallet = localStorage.getItem('usingSolanaWallet') === 'true';
       
-      // For Solana wallets, always use the default destination address
-      if (walletType === 'svm') {
-        console.log('Solana wallet detected, using default destination address for returnAddress')
-        walletAddress = DEFAULT_DESTINATION_ADDRESS
+      let walletAddress;
+      if (isSolanaWallet) {
+        // If using Solana wallet, get the stored EVM return address for Paycrest
+        walletAddress = localStorage.getItem('paycrestReturnAddress') || DEFAULT_DESTINATION_ADDRESS;
+        console.log('Using Solana wallet, using default EVM return address:', walletAddress);
+      } else {
+        // For EVM wallets, use the actual connected address or fallback
+        walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS;
       }
       
       // Ensure the wallet address is in a valid format (not Solana format)
