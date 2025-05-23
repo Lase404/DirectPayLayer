@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { ArrowLeftIcon, CheckCircleIcon, ClockIcon, XCircleIcon } from '@heroicons/react/24/outline'
+import { ArrowLeftIcon, CheckCircleIcon, ClockIcon, XCircleIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline'
 import { ArrowPathIcon } from '@heroicons/react/24/solid'
 import { checkTransactionStatus } from '@/utils/paycrest'
 
@@ -28,6 +28,8 @@ export default function TransactionTracker({
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [pastTransactions, setPastTransactions] = useState<any[]>([])
+  const [connectionError, setConnectionError] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   // Load past transactions from localStorage
   useEffect(() => {
@@ -85,6 +87,12 @@ export default function TransactionTracker({
         // Call the transaction status API
         const response = await checkTransactionStatus(orderId)
         
+        // Reset connection error if we get a successful response
+        if (connectionError) {
+          setConnectionError(false)
+          setRetryCount(0)
+        }
+        
         if (response && response.status === 'success' && response.data) {
           const txStatus = response.data.status
           console.log('Transaction status update:', txStatus)
@@ -99,9 +107,13 @@ export default function TransactionTracker({
       } catch (err) {
         console.error('Error polling transaction status:', err)
         
-        // Only show error after multiple failed attempts
-        if (pollCounter > 3) {
-          setErrorMessage('Could not retrieve transaction status. Will keep trying...')
+        // Track connection errors
+        setConnectionError(true)
+        setRetryCount(prevCount => prevCount + 1)
+        
+        // After 3 failed attempts, show error message
+        if (retryCount >= 3) {
+          setErrorMessage('Network error: Could not connect to payment service. Will keep trying...')
         }
       }
       
@@ -117,10 +129,48 @@ export default function TransactionTracker({
     pollStatus() // Initial call
     
     return () => clearInterval(interval)
-  }, [orderId, isPolling, status])
+  }, [orderId, isPolling, status, connectionError, retryCount])
+
+  // Function to manually retry status check
+  const retryStatusCheck = async () => {
+    if (!orderId) return
+    
+    setErrorMessage(null)
+    setConnectionError(false)
+    
+    try {
+      const response = await checkTransactionStatus(orderId)
+      
+      if (response && response.status === 'success' && response.data) {
+        const txStatus = response.data.status
+        setStatus(txStatus)
+        
+        // If transaction is complete, stop polling
+        if (txStatus === 'settled' || txStatus === 'refunded' || txStatus === 'expired') {
+          setProgress(100)
+          setIsPolling(false)
+        } else {
+          // Otherwise, restart polling
+          setIsPolling(true)
+        }
+      }
+    } catch (err) {
+      console.error('Error manually checking status:', err)
+      setErrorMessage('Could not connect to payment service. Please check your internet connection.')
+    }
+  }
 
   // Get status display information
   const getStatusInfo = () => {
+    if (connectionError && retryCount >= 3) {
+      return {
+        title: 'Connection Error',
+        description: 'Unable to check transaction status. Your internet connection may be offline.',
+        icon: <ExclamationCircleIcon className="h-12 w-12 text-orange-500" />,
+        color: 'bg-orange-100 border-orange-300'
+      }
+    }
+    
     switch (status) {
       case 'pending':
         return {
@@ -245,9 +295,20 @@ export default function TransactionTracker({
             </div>
             <h2 className="text-xl font-bold mb-2">{statusInfo.title}</h2>
             <p className="text-gray-700">{statusInfo.description}</p>
+            
+            {/* Connection retry button */}
+            {connectionError && retryCount >= 3 && (
+              <button
+                onClick={retryStatusCheck}
+                className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-sm flex items-center justify-center mx-auto"
+              >
+                <ArrowPathIcon className="h-4 w-4 mr-1" />
+                Retry Connection
+              </button>
+            )}
           </div>
           
-          {status === 'pending' && (
+          {status === 'pending' && !connectionError && (
             <div className="mb-6">
               <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                 <div 
@@ -285,8 +346,23 @@ export default function TransactionTracker({
               </div>
               
               <div className="text-gray-500">Order ID:</div>
-              <div className="text-right font-medium text-xs truncate max-w-[150px]">
-                {orderId || 'Unknown'}
+              <div className="text-right font-medium text-xs truncate max-w-[150px] flex items-center justify-end">
+                <span className="truncate">{orderId || 'Unknown'}</span>
+                <button 
+                  onClick={() => {
+                    if (orderId) {
+                      navigator.clipboard.writeText(orderId);
+                      // You could add a toast notification here
+                    }
+                  }}
+                  className="ml-1 text-blue-600 hover:text-blue-800"
+                  title="Copy Order ID"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
+                    <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>

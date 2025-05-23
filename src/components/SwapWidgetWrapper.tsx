@@ -1035,28 +1035,18 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // If we reach here, either forceCreate is true or we need a new order
       console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
       
-      // Step 1: Get account name and rate in parallel
-      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
-      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
-      
       try {
+        // Step 1: Get account name and rate in parallel using our proxy endpoints
         const [accountNameResponse, nairaRateResponse] = await Promise.all([
-          fetch(verifyAccountEndpoint, {
+          fetch('/api/paycrest/verify-account', {
             method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               institution: bankDetails.institution,
               accountIdentifier: bankDetails.accountIdentifier
             })
           }),
-          fetch(nairaRateEndpoint, {
-            headers: { 
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-            }
-          })
+          fetch('/api/paycrest/rates')
         ])
         
         if (!accountNameResponse.ok || !nairaRateResponse.ok) {
@@ -1077,9 +1067,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         console.log('Account verification successful:', accountName)
         console.log('Current Naira rate:', rate)
-        
-        // Step 2: Create the order with the correct payload format
-        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
         
         // Get connected wallet address for return address, fallback to default
         let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
@@ -1114,12 +1101,10 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         console.log('Sending order payload:', orderPayload)
         
-        const orderResponse = await fetch(createOrderEndpoint, {
+        // Use our proxy endpoint to create the order
+        const orderResponse = await fetch('/api/paycrest/orders', {
           method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(orderPayload)
         })
         
@@ -1409,7 +1394,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                     borderRadius: '4px'
                   }} />
                 ) : (
-                  <>
+                  <div className="flex items-center">
                     <span style={{ 
                       fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
                       transition: 'font-size 0.1s ease',
@@ -1423,7 +1408,48 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                     }}>
                       {nairaAmount}
                     </span>
-                  </>
+                    {paycrestRate === DEFAULT_RATE && (
+                      <div 
+                        className="rate-warning" 
+                        title="Using default exchange rate. Click to refresh."
+                        onClick={() => {
+                          const fetchRate = async () => {
+                            try {
+                              setIsRateLoading(true);
+                              const rate = await getRatesForOfframp();
+                              if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
+                                console.log("Rate fetched successfully:", rate.NGN);
+                                setPaycrestRate(rate.NGN);
+                                rateRef.current = rate.NGN;
+                                setError(null);
+                              }
+                            } catch (err) {
+                              console.error('Error fetching rate:', err);
+                            } finally {
+                              setIsRateLoading(false);
+                            }
+                          };
+                          fetchRate();
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          marginLeft: '8px',
+                          cursor: 'pointer',
+                          backgroundColor: '#FEF3C7',
+                          color: '#D97706',
+                          borderRadius: '50%',
+                          width: '18px',
+                          height: '18px',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          fontSize: '12px',
+                          fontWeight: 'bold'
+                        }}
+                      >
+                        !
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </>

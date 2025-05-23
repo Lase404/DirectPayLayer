@@ -140,11 +140,8 @@ export async function getTransactionHistory(userId: string): Promise<any[]> {
 // Get NGN rate for USDC (simpler method) based on the provided example
 export async function getRatesForOfframp(): Promise<any> {
   try {
-    const response = await axios.get(`${PAYCREST_API_URL}/rates/usdc/1/ngn`, {
-      headers: {
-        'API-Key': PAYCREST_API_KEY
-      }
-    });
+    // Use our proxy endpoint instead of calling Paycrest directly
+    const response = await axios.get('/api/paycrest/rates');
     
     if (response.data.status === 'success') {
       return {
@@ -162,16 +159,11 @@ export async function getRatesForOfframp(): Promise<any> {
 // Verify bank account
 export async function verifyBankAccount(institution: string, accountIdentifier: string): Promise<any> {
   try {
-    const response = await axios.post(`${PAYCREST_API_URL}/verify-account`, 
+    // Use our proxy endpoint instead of calling Paycrest directly
+    const response = await axios.post('/api/paycrest/verify-account', 
       {
         institution,
         accountIdentifier
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'API-Key': PAYCREST_API_KEY
-        }
       }
     );
     
@@ -185,15 +177,8 @@ export async function verifyBankAccount(institution: string, accountIdentifier: 
 // Create a new order
 export async function createOrder(orderData: any): Promise<any> {
   try {
-    const response = await axios.post(`${PAYCREST_API_URL}/sender/orders`,
-      orderData,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'API-Key': PAYCREST_API_KEY
-        }
-      }
-    );
+    // Use our proxy endpoint instead of calling Paycrest directly
+    const response = await axios.post('/api/paycrest/orders', orderData);
     
     return response.data;
   } catch (error) {
@@ -202,29 +187,17 @@ export async function createOrder(orderData: any): Promise<any> {
   }
 }
 
-// Check transaction status - to be implemented with proxy API
+// Check transaction status - now using our proxy endpoint
 export async function checkTransactionStatus(orderId: string): Promise<any> {
   try {
-    // Note: This would normally call your backend proxy
-    // Since direct calls to Paycrest for status checks aren't available in the client
-    // You would implement a backend endpoint that handles this
+    if (!orderId) {
+      throw new Error('Order ID is required');
+    }
     
-    // For now, this is a mock implementation
-    const mockStatuses = ['pending', 'settled', 'refunded', 'expired'];
-    const randomStatus = mockStatuses[Math.floor(Math.random() * 4)];
+    // Use our proxy endpoint instead of mocking or calling Paycrest directly
+    const response = await axios.get(`/api/paycrest/status?orderId=${orderId}`);
     
-    // In a real implementation, you would:
-    // const response = await axios.get(`/api/transactions/${orderId}`)
-    // return response.data
-    
-    return {
-      status: 'success',
-      data: {
-        id: orderId,
-        status: randomStatus,
-        updatedAt: new Date().toISOString()
-      }
-    };
+    return response.data;
   } catch (error) {
     console.error('Failed to check transaction status:', error);
     throw error;
