@@ -37,45 +37,128 @@ const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
 
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
-  // Handle null/undefined addresses
-  if (!address) {
-    console.warn('isSolanaAddress: received null/undefined address')
-    return false
-  }
-  
   // Solana addresses are base58 encoded strings, typically 32-44 characters
   // They don't start with 0x like Ethereum addresses
-  const result = typeof address === 'string' && 
+  return typeof address === 'string' && 
          !address.startsWith('0x') && 
-         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)
-  
-  if (result) {
-    console.log(`Detected Solana address format: ${address}`)
-  }
-  
-  return result
+         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
 
 // Helper function to ensure valid return address
 const getValidReturnAddress = (address: string): string => {
-  // Handle null/undefined addresses
-  if (!address) {
-    console.warn('getValidReturnAddress: received null/undefined address, using default')
-    return DEFAULT_DESTINATION_ADDRESS
-  }
-  
   if (isSolanaAddress(address)) {
-    console.log('Solana address detected, replacing with default destination:', address)
-    return DEFAULT_DESTINATION_ADDRESS
+    console.log('Solana address detected, replacing with default destination:', address);
+    return DEFAULT_DESTINATION_ADDRESS;
   }
-  
-  // Verify it's an EVM address format
-  if (!address.startsWith('0x') || address.length !== 42) {
-    console.warn(`Non-standard address format detected: ${address}, using default`)
-    return DEFAULT_DESTINATION_ADDRESS
-  }
-  
-  return address
+  return address;
+}
+
+// Network request interceptors for Paycrest API
+if (typeof window !== 'undefined') {
+  // Intercept fetch API
+  const originalFetch = window.fetch;
+  window.fetch = async function(...args) {
+    try {
+      const [resource, options] = args;
+      
+      // Check if this is a Paycrest API request
+      if (typeof resource === 'string' && resource.includes('paycrest.io')) {
+        // Check if this is a POST request with a body
+        if (options && options.body && typeof options.body === 'string') {
+          try {
+            const body = JSON.parse(options.body);
+            // Check if the body contains a returnAddress field
+            if (body.returnAddress) {
+              if (isSolanaAddress(body.returnAddress)) {
+                const validAddress = getValidReturnAddress(body.returnAddress);
+                console.log(`API route: Replaced invalid return address: ${body.returnAddress} → ${validAddress}`);
+                body.returnAddress = validAddress;
+                
+                // Create new options with fixed body
+                const newOptions = {
+                  ...options,
+                  body: JSON.stringify(body)
+                };
+                
+                console.log('Sending validated Paycrest order payload:', body);
+                return originalFetch.apply(this, [resource, newOptions]);
+              }
+            }
+          } catch (e) {
+            // If parsing fails, proceed with the original request
+            console.error('Error parsing fetch body:', e);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in fetch interceptor:', error);
+    }
+    
+    // If no Solana address was detected or there was an error, proceed with the original request
+    return originalFetch.apply(this, args);
+  };
+
+  // Intercept XMLHttpRequest for other types of requests
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(
+    method: string, 
+    url: string | URL, 
+    async: boolean = true, 
+    username?: string | null, 
+    password?: string | null
+  ) {
+    // Store the URL for later use in send
+    this._relayUrl = url?.toString();
+    
+    return originalXHROpen.call(this, method, url, async, username || null, password || null);
+  };
+
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function(body?: Document | XMLHttpRequestBodyInit | null) {
+    try {
+      if (this._relayUrl && typeof this._relayUrl === 'string' && 
+          this._relayUrl.includes('paycrest.io') && 
+          body && typeof body === 'string') {
+        
+        try {
+          const data = JSON.parse(body);
+          if (data.returnAddress) {
+            if (isSolanaAddress(data.returnAddress)) {
+              const validAddress = getValidReturnAddress(data.returnAddress);
+              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validAddress}`);
+              data.returnAddress = validAddress;
+              
+              // Return modified body
+              return originalXHRSend.call(this, JSON.stringify(data));
+            }
+          }
+        } catch (e) {
+          console.error('Error parsing XHR body:', e);
+        }
+      }
+    } catch (error) {
+      console.error('Error in XHR send interceptor:', error);
+    }
+    
+    // If no intervention needed, proceed with original send
+    return originalXHRSend.call(this, body);
+  };
+
+  // Intercept Axios if it's being used
+  axios.interceptors.request.use(config => {
+    try {
+      if (config.url && config.url.includes('paycrest.io') && config.data) {
+        if (config.data.returnAddress && isSolanaAddress(config.data.returnAddress)) {
+          const validAddress = getValidReturnAddress(config.data.returnAddress);
+          console.log(`API route: Replaced invalid return address: ${config.data.returnAddress} → ${validAddress}`);
+          config.data.returnAddress = validAddress;
+        }
+      }
+    } catch (error) {
+      console.error('Error in axios interceptor:', error);
+    }
+    return config;
+  });
 }
 
 // Update the component to accept props
@@ -84,7 +167,7 @@ interface SwapWidgetWrapperProps {
 }
 
 export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperProps) {
-  const { login, authenticated, user, ready, linkWallet } = usePrivy()
+  const { login, authenticated, user, ready, linkWallet, logout } = usePrivy()
   const { data: walletClient } = useWalletClient()
   const containerRef = useRef<HTMLDivElement>(null)
   
@@ -105,6 +188,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const { address: connectedAddress } = useAccount()
   const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
+  const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
   
   // Watch for changes in the receive address
   useEffect(() => {
@@ -142,209 +226,40 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
-        console.log("Setting up wallet with Privy user:", user);
-        
-        // Check for EVM wallet via viem client first (direct connection)
+        // Check for EVM wallet
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
-          console.log("Direct EVM wallet adapted via viem:", adapted);
+          console.log("EVM wallet adapted:", adapted);
           return;
         }
         
-        // Check for single wallet property (this happens with some Privy configurations)
-        // @ts-ignore - The wallet property might not be in all Privy user types
-        if (user.wallet) {
-          // @ts-ignore
-          console.log("Found direct wallet in user object:", user.wallet);
-          
-          // @ts-ignore
-          if (user.wallet.chainType === 'solana' || 
-              // @ts-ignore
-              user.wallet.walletClientType === 'phantom' || 
-              // @ts-ignore
-              user.wallet.connectorType === 'solana_adapter') {
-            
-            // @ts-ignore
-            console.log("Detected Solana wallet in user.wallet:", user.wallet);
-            setWalletType('svm');
-            localStorage.setItem('usingSolanaWallet', 'true');
-            
-            try {
-              // @ts-ignore
-              if (user.wallet.address) {
-                // Using a valid EVM address for returnAddress to avoid Solana format issues
-                const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
-                
-                // IMPORTANT: Store this as the paycrestReturnAddress, NOT as the connectedWalletAddress
-                // This ensures it's only used for Paycrest API calls and not for Relay
-                localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
-                
-                // Still create adapter for Solana to show as connected in UI
-                // @ts-ignore - Using type assertion to override TypeScript checking for Solana adapter
-                const solanaAdapter = adaptSolanaWallet({
-                  // @ts-ignore
-                  publicKey: user.wallet.address,
-                  // Using cast to any to bypass TypeScript checks for this custom adapter
-                  signMessage: async () => { 
-                    console.warn("signMessage not implemented for adapted Solana wallet");
-                    // @ts-ignore - Return empty array that matches expected type
-                    return new Uint8Array();
-                  },
-                  signTransaction: async () => {
-                    console.warn("signTransaction not implemented for adapted Solana wallet");
-                    // @ts-ignore - Using empty object to satisfy TypeScript
-                    return new VersionedTransaction(new Uint8Array() as any);
-                  }
-                } as any);
-                
-                setAdaptedWallet(solanaAdapter);
-                // @ts-ignore
-                console.log("Adapted Solana wallet from user.wallet:", solanaAdapter);
-              }
-            } catch (err) {
-              console.error("Error adapting Solana wallet:", err);
-            }
-            
-            return;
-          // @ts-ignore
-          } else if (user.wallet.address) {
-            // It's an EVM wallet
-            // @ts-ignore
-            console.log("Detected EVM wallet in user.wallet:", user.wallet);
-            
-            const adaptedWallet = {
-              // @ts-ignore
-              address: user.wallet.address,
-              chainId: 1, // Default to Ethereum mainnet
-              async getAccounts() {
-                // @ts-ignore
-                return [{ address: user.wallet.address }];
-              },
-              async signMessage() {
-                console.warn("signMessage not implemented for adapted Privy wallet");
-                return "";
-              },
-              async signTypedData() {
-                console.warn("signTypedData not implemented for adapted Privy wallet");
-                return "";
-              }
-            };
-            
-            setAdaptedWallet(adaptedWallet);
-            setWalletType('evm');
-            // @ts-ignore
-            localStorage.setItem('connectedWalletAddress', user.wallet.address);
-            return;
-          }
-        }
+        // Check for Solana wallet in user's linked wallets from Privy
+        console.log("Checking for Solana wallet in Privy user object:", user);
         
-        // Access the wallets from the user object
+        // Access the wallets from the user object (Privy API may vary)
         // @ts-ignore - The Privy User type might not include wallets property in all versions
-        const userWallets = user.wallets || [];
-        
-        if (userWallets.length > 0) {
-          console.log("Found wallets in Privy user object:", userWallets);
-          
-          // Look for embedded wallets and connected wallets
+        if (user.wallets && user.wallets.length > 0) {
+          // Look for a Solana wallet
           // @ts-ignore
-          const allWallets = [...(user.linkedAccounts || []), ...userWallets];
-          
-          // First, try to find an Ethereum wallet (including Trust Wallet)
-          // @ts-ignore
-          const ethWallet = allWallets.find((wallet: any) => {
-            // Check wallet type
-            const walletStr = JSON.stringify(wallet).toLowerCase();
-            const isEthWallet = 
-              (walletStr.includes('ethereum') || 
-               walletStr.includes('evm') || 
-               walletStr.includes('metamask') ||
-               walletStr.includes('trust') ||
-               walletStr.includes('coinbase') ||
-               (wallet.chainId && [1, 5, 11155111].includes(wallet.chainId))) &&
-              !walletStr.includes('solana') && 
-              !walletStr.includes('phantom');
-            
-            if (isEthWallet) {
-              console.log("Found Ethereum wallet:", wallet);
-            }
-            
-            return isEthWallet;
-          });
-          
-          // Then check for Solana wallets
-          // @ts-ignore
-          const solWallet = allWallets.find((wallet: any) => {
+          const solanaWallet = user.wallets.find((wallet: any) => {
+            // Different Privy versions might structure this differently
+            // Look for any property indicating a Solana wallet
             const walletStr = JSON.stringify(wallet).toLowerCase();
             return walletStr.includes('solana') || 
                    walletStr.includes('phantom') || 
                    walletStr.includes('svm');
           });
           
-          // Prioritize ethereum wallets
-          if (ethWallet) {
-            console.log("Using Ethereum wallet from Privy:", ethWallet);
+          if (solanaWallet) {
+            console.log("Found potential Solana wallet:", solanaWallet);
             
-            // Create a simple adapter that matches the expected interface
-            const adaptedWallet = {
-              // @ts-ignore
-              address: ethWallet.address || ethWallet.accounts?.[0]?.address,
-              chainId: 1, // Default to Ethereum mainnet
-              async getAccounts() {
-                // @ts-ignore
-                return [{ address: ethWallet.address || ethWallet.accounts?.[0]?.address }];
-              },
-              async signMessage() {
-                console.warn("signMessage not implemented for adapted Privy wallet");
-                return "";
-              },
-              async signTypedData() {
-                console.warn("signTypedData not implemented for adapted Privy wallet");
-                return "";
-              }
-            };
-            
-            setAdaptedWallet(adaptedWallet);
-            setWalletType('evm');
-            console.log("Adapted Ethereum wallet from Privy:", adaptedWallet);
-          } else if (solWallet) {
-            console.log("Using Solana wallet from Privy:", solWallet);
+            // Here you would use your adaptSolanaWallet utility
+            // For now, just log that we found it
             setWalletType('svm');
-            
-            // For Solana wallets, use default EVM address for returnAddress
-            const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
-            localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
-            localStorage.setItem('usingSolanaWallet', 'true');
-            
-            try {
-              // Create a basic adapter for the Solana wallet
-              // @ts-ignore - Using type assertion for Solana adapter
-              const solanaAdapter = adaptSolanaWallet({
-                // @ts-ignore
-                publicKey: solWallet.address,
-                signMessage: async () => { 
-                  console.warn("signMessage not implemented for adapted Solana wallet");
-                  // @ts-ignore
-                  return new Uint8Array();
-                },
-                signTransaction: async () => {
-                  console.warn("signTransaction not implemented for adapted Solana wallet");
-                  // @ts-ignore
-                  return new VersionedTransaction(new Uint8Array() as any);
-                }
-              } as any);
-              
-              setAdaptedWallet(solanaAdapter);
-              console.log("Adapted Solana wallet:", solanaAdapter);
-            } catch (err) {
-              console.error("Error adapting Solana wallet:", err);
-            }
-          } else {
-            console.log("No suitable wallet found in Privy user object");
+            console.log("Solana wallet detected but not fully implemented");
           }
-        } else {
-          console.log("No wallets found in Privy user object");
         }
         
       } catch (err) {
@@ -362,7 +277,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     chainId: SUPPORTED_CHAINS.BASE,
     address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     decimals: 6, name: 'Nigerian Naira', symbol: 'NGN',
-    logoURI: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Flag_of_Nigeria.svg/500px-Flag_of_Nigeria.svg.png'
+    logoURI: 'https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75'
   });
 
   // Fetch Paycrest rate and update it periodically
@@ -415,79 +330,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     
     console.log("Setting up enhanced API request interceptor");
     
-    // Global CORS error counter
-    let corsErrorCount = 0;
-    const corsErrorThreshold = 3;
-    
     // Replace fetch with our enhanced version
     window.fetch = async function(input, init) {
       let url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input instanceof Request ? input.url : '';
-      
-      // Track any Paycrest API calls specially to detect CORS issues
-      if (url.includes('api.paycrest.io')) {
-        console.log(`Monitoring Paycrest API call to: ${url}`);
-        
-        // For return address in Paycrest API calls, ensure it's valid
-        if (init && init.body) {
-          try {
-            let body;
-            if (typeof init.body === 'string') {
-              body = JSON.parse(init.body);
-              
-              if (body.returnAddress) {
-                // Use the stored paycrestReturnAddress for Solana wallets
-                const isSolanaWallet = localStorage.getItem('usingSolanaWallet') === 'true';
-                const validReturnAddress = isSolanaWallet
-                  ? (localStorage.getItem('paycrestReturnAddress') || DEFAULT_DESTINATION_ADDRESS)
-                  : getValidReturnAddress(body.returnAddress);
-                
-                if (body.returnAddress !== validReturnAddress) {
-                  console.warn(`Replacing possibly invalid returnAddress in Paycrest API: ${body.returnAddress} → ${validReturnAddress}`);
-                  body.returnAddress = validReturnAddress;
-                  init.body = JSON.stringify(body);
-                }
-              }
-            }
-          } catch (err) {
-            console.error("Error parsing/modifying Paycrest API body:", err);
-          }
-        }
-        
-        // Add promise handling to detect CORS errors
-        try {
-          const response = await originalFetch.call(window, input, init);
-          return response;
-        } catch (error) {
-          console.error(`Paycrest API call failed: ${url}`, error);
-          
-          // Check if it's likely a CORS error
-          if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' && (
-              error.message.includes('CORS') || 
-              error.message.includes('Failed to fetch') ||
-              error.message.includes('NetworkError'))) {
-            
-            corsErrorCount++;
-            console.warn(`Possible CORS error detected (${corsErrorCount}/${corsErrorThreshold})`);
-            
-            if (corsErrorCount >= corsErrorThreshold) {
-              console.error(`CORS error threshold reached, enabling fallback mode`);
-              localStorage.setItem('corsErrorsDetected', 'true');
-            }
-          }
-          
-          throw error;
-        }
-      }
       
       // Check if this is a relay API call
       if (url.includes('api.relay') || url.includes('quote')) {
         console.log("Intercepting Relay API call:", url);
         
-        // Get the current receiveAddress from Paycrest order
-        const paycrestReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
-        
         // If it has a body, enforce our destination address
-        if (init && init.body && paycrestReceiveAddress) {
+        if (init && init.body) {
           let body;
           try {
             // Parse the body
@@ -496,33 +348,42 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             let modified = false;
             
             // FORCE the recipient in ALL places it could appear
-            // Use the paycrestReceiveAddress for Relay recipient
             // Direct recipient field
-            if (body.recipient !== paycrestReceiveAddress) {
-              console.warn(`Correcting recipient in API call: ${body.recipient} → ${paycrestReceiveAddress}`);
-              body.recipient = paycrestReceiveAddress;
+            if (body.recipient !== destinationAddress) {
+              console.warn(`Correcting recipient in API call: ${body.recipient} → ${destinationAddress}`);
+              body.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for nested recipient
-            if (body.params && body.params.recipient !== paycrestReceiveAddress) {
-              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${paycrestReceiveAddress}`);
-              body.params.recipient = paycrestReceiveAddress;
+            if (body.params && body.params.recipient !== destinationAddress) {
+              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${destinationAddress}`);
+              body.params.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for parameters.recipient
-            if (body.parameters && body.parameters.recipient !== paycrestReceiveAddress) {
-              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${paycrestReceiveAddress}`);
-              body.parameters.recipient = paycrestReceiveAddress;
+            if (body.parameters && body.parameters.recipient !== destinationAddress) {
+              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${destinationAddress}`);
+              body.parameters.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for user field which sometimes doubles as recipient
-            if (body.parameters && body.parameters.user && body.parameters.user !== paycrestReceiveAddress) {
-              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${paycrestReceiveAddress}`);
-              body.parameters.user = paycrestReceiveAddress;
+            if (body.parameters && body.parameters.user && body.parameters.user !== destinationAddress) {
+              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${destinationAddress}`);
+              body.parameters.user = destinationAddress;
               modified = true;
+            }
+            
+            // Check for returnAddress fields (for Paycrest API)
+            if (body.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(body.returnAddress);
+              if (body.returnAddress !== validReturnAddress) {
+                console.warn(`Replacing Solana returnAddress in API call: ${body.returnAddress} → ${validReturnAddress}`);
+                body.returnAddress = validReturnAddress;
+                modified = true;
+              }
             }
             
             // Only replace if modified
@@ -802,44 +663,75 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   useEffect(() => {
     // Setup event listener for quote events
     const handleAnalyticEvent = (e: any) => {
-      const { eventName, data } = e.detail || {};
-      
-      if (eventName === 'quote:requested') {
-        console.log("Quote requested");
-        setIsLoading(true);
+      if (!e || !e.eventName) return
+
+      console.log('[Widget Event]', e.eventName, e.data)
+
+      // Force update recipient in quote data
+      if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
+        console.log(`ENFORCING RECIPIENT IN QUOTE REQUEST:`, destinationAddress)
+        e.data.parameters.recipient = destinationAddress
       }
       
-      if (eventName === 'quote:created' || eventName === 'quote:updated') {
-        console.log("Quote received:", data);
-        setIsLoading(false);
+      // Handle successful swap
+      if (e.eventName === 'SWAP_SUCCESS') {
+        console.log("SWAP_SUCCESS event detected, creating new address")
+        setSwapSuccessOccurred(true) // Mark that swap success has occurred
+        handleSwapSuccess()
+      }
+
+      // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+      if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
+        console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+        // Reset the flag
+        setSwapSuccessOccurred(false)
         
-        // Try to update based on toAmount if available
-        if (data && data.toAmount) {
-          console.log("Output amount from quote:", data.toAmount);
-          
-          // Parse the toAmount and update the Naira display
-          try {
-            const toAmountStr = String(data.toAmount);
-            const cleanedAmountStr = toAmountStr.replace(/,/g, '');
-            const toAmountNum = Number(cleanedAmountStr);
+        // Add a small delay to ensure all operations complete before logout
+        setTimeout(() => {
+          if (authenticated && logout) {
+            // Clear local storage
+            localStorage.removeItem('paycrestReceiveAddress')
+            localStorage.removeItem('paycrestOrderId')
+            localStorage.removeItem('paycrestReference')
+            localStorage.removeItem('paycrestValidUntil')
+            localStorage.removeItem('lastOrderTimestamp')
             
-            if (!isNaN(toAmountNum) && isFinite(toAmountNum)) {
-              // Convert USDC to Naira
-              const nairaValue = toAmountNum * paycrestRate;
-              const formattedNaira = nairaValue.toLocaleString('en-NG', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-              });
-              
-              console.log(`Setting Naira from quote event: ${formattedNaira} (${toAmountNum} * ${paycrestRate})`);
-              setNairaAmount(formattedNaira);
-              setOutputValue(toAmountNum);
-            }
-          } catch (err) {
-            console.error("Error parsing toAmount from quote:", err);
+            // Log the user out
+            logout()
+              .then(() => {
+                console.log('User logged out successfully after swap')
+                // Reload the page to ensure clean state
+                window.location.reload()
+              })
+              .catch(err => {
+                console.error('Failed to log out user:', err)
+              })
           }
+        }, 1000)
+      }
+      
+      // Handle wallet selector events
+      if (e.eventName === 'WALLET_SELECTOR_SELECT') {
+        console.log("Wallet selector triggered:", e.data)
+        if (e.data && e.data.context === 'not_connected') {
+          console.log("Initiating wallet connection flow")
+          
+          // Set wallet type directly if it's a Solana wallet
+          if (e.data.wallet_type && 
+              (e.data.wallet_type.toLowerCase().includes('solana') ||
+               e.data.wallet_type.toLowerCase().includes('phantom') ||
+               e.data.wallet_type.toLowerCase().includes('svm'))) {
+            console.log("Setting wallet type to Solana")
+            setWalletType('svm')
+          }
+          
+          handleWalletConnection(e.data.wallet_type)
         }
       }
+      
+      // Dispatch custom event for external listeners
+      const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
+      window.dispatchEvent(customEvent)
     };
     
     window.addEventListener('relay-analytic', handleAnalyticEvent);
@@ -855,115 +747,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     if (!authenticated) {
       console.log("User not authenticated, initiating login");
       await login();
-      // Return here to allow the login process to complete
-      // The setupWallet effect will run after login
-      return;
-    }
-    
-    if (connectorType) {
+    } else if (connectorType) {
       console.log("Connecting specific wallet type:", connectorType);
-      
-      // Handle specific connector types
+      // Handle specific connector types if needed
       if (connectorType.toLowerCase().includes('solana') || 
           connectorType.toLowerCase().includes('phantom')) {
         console.log("Connecting Solana wallet");
         // Set wallet type to Solana Virtual Machine
         setWalletType('svm');
-        localStorage.setItem('usingSolanaWallet', 'true');
-        
-        // For Solana wallets, always store the default EVM address for Paycrest
-        const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
-        localStorage.setItem('paycrestReturnAddress', DEFAULT_DESTINATION_ADDRESS);
-      } else if (connectorType.toLowerCase().includes('trust') ||
-                 connectorType.toLowerCase().includes('metamask') ||
-                 connectorType.toLowerCase().includes('coinbase') ||
-                 connectorType.toLowerCase().includes('wallet-connect') ||
-                 connectorType.toLowerCase().includes('evm')) {
-        console.log("Connecting EVM wallet:", connectorType);
-        setWalletType('evm');
-        localStorage.removeItem('usingSolanaWallet');
-        localStorage.removeItem('paycrestReturnAddress');
       }
-      
-      try {
-        await linkWallet();
-        
-        // Give Privy a moment to update the user object
-        setTimeout(() => {
-          // Re-run setupWallet
-          if (user) {
-            console.log("Re-checking wallets after connection...");
-            // Call setupWallet directly since we're inside an event handler
-            const setupWallet = async () => {
-              try {
-                // @ts-ignore - Access wallets
-                const userWallets = user.wallets || [];
-                console.log("User wallets after connection:", userWallets);
-                
-                // Re-check for the newly connected wallet
-                // Use the same logic as in the setupWallet effect
-                // @ts-ignore
-                const allWallets = [...(user.linkedAccounts || []), ...userWallets];
-                
-                // First check for the wallet type that was requested
-                const walletTypeToFind = connectorType.toLowerCase().includes('solana') ? 'solana' : 'ethereum';
-                
-                // @ts-ignore
-                const wallet = allWallets.find((w: any) => {
-                  const walletStr = JSON.stringify(w).toLowerCase();
-                  
-                  if (walletTypeToFind === 'solana') {
-                    return walletStr.includes('solana') || walletStr.includes('phantom');
-                  } else {
-                    return (walletStr.includes('ethereum') || 
-                            walletStr.includes('evm') || 
-                            walletStr.includes(connectorType.toLowerCase())) &&
-                           !walletStr.includes('solana');
-                  }
-                });
-                
-                if (wallet) {
-                  console.log(`Found ${walletTypeToFind} wallet after connection:`, wallet);
-                  
-                  if (walletTypeToFind !== 'solana') {
-                    // Create adapter for EVM wallet
-                    const adaptedWallet = {
-                      // @ts-ignore
-                      address: wallet.address || wallet.accounts?.[0]?.address,
-                      chainId: 1, // Default to Ethereum mainnet
-                      async getAccounts() {
-                        // @ts-ignore
-                        return [{ address: wallet.address || wallet.accounts?.[0]?.address }];
-                      },
-                      async signMessage() {
-                        console.warn("signMessage not implemented for adapted Privy wallet");
-                        return "";
-                      },
-                      async signTypedData() {
-                        console.warn("signTypedData not implemented for adapted Privy wallet");
-                        return "";
-                      }
-                    };
-                    
-                    setAdaptedWallet(adaptedWallet);
-                    setWalletType('evm');
-                    console.log("Adapted wallet after connection:", adaptedWallet);
-                  } else {
-                    setWalletType('svm');
-                  }
-                }
-              } catch (err) {
-                console.error("Error finding wallet after connection:", err);
-              }
-            };
-            
-            setupWallet();
-          }
-        }, 1000); // Give Privy a second to update
-        
-      } catch (err) {
-        console.error("Error linking wallet:", err);
-      }
+      await linkWallet();
     } else {
       console.log("Connecting additional wallet");
       await linkWallet();
@@ -1250,106 +1043,63 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // If we reach here, either forceCreate is true or we need a new order
       console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
       
-      // MODIFIED: Check for Solana wallet first, then use the appropriate return address
-      const isSolanaWallet = localStorage.getItem('usingSolanaWallet') === 'true';
-      
-      let walletAddress;
-      if (isSolanaWallet) {
-        // If using Solana wallet, get the stored EVM return address for Paycrest
-        walletAddress = localStorage.getItem('paycrestReturnAddress') || DEFAULT_DESTINATION_ADDRESS;
-        console.log('Using Solana wallet, using default EVM return address:', walletAddress);
-      } else {
-        // For EVM wallets, use the actual connected address or fallback
-        walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS;
-      }
-      
-      // Ensure the wallet address is in a valid format (not Solana format)
-      walletAddress = getValidReturnAddress(walletAddress)
-      console.log('Using wallet address for return:', walletAddress)
-
-      // If the app is currently experiencing CORS issues, return a fake successful response
-      // This is a temporary workaround to keep the app working during API issues
-      const corsErrorsDetected = localStorage.getItem('corsErrorsDetected') === 'true'
-      if (corsErrorsDetected) {
-        console.warn('CORS errors have been detected, using fallback order creation')
-        
-        // Generate a deterministic but changing receive address based on time
-        const fakeOrderId = `fake-order-${Date.now()}`
-        const receiveAddress = DEFAULT_DESTINATION_ADDRESS
-        
-        // Save the fake order details
-        localStorage.setItem('paycrestOrderId', fakeOrderId)
-        localStorage.setItem('paycrestReference', `ref-${Date.now()}`)
-        localStorage.setItem('paycrestValidUntil', (now + 3600000).toString()) // Valid for 1 hour
-        localStorage.setItem('lastOrderTimestamp', now.toString())
-        localStorage.setItem('paycrestReceiveAddress', receiveAddress)
-        
-        // Update component state
-        setDestinationAddress(receiveAddress)
-        setOrderStatus('valid')
-        
-        console.log('Created fallback order with receive address:', receiveAddress)
-        return receiveAddress
-      }
-      
       // Step 1: Get account name and rate in parallel
       const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
       const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
       
       try {
-        // Enhanced headers with better CORS handling
-        const apiHeaders = {
-          "Content-Type": "application/json",
-          "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b",
-          "Accept": "application/json"
-        }
-        
-        let accountName = "Unknown Account"
-        let rate = DEFAULT_RATE
-        
-        try {
-          const [accountNameResponse, nairaRateResponse] = await Promise.all([
-            fetch(verifyAccountEndpoint, {
-              method: "POST",
-              headers: apiHeaders,
-              body: JSON.stringify({
-                institution: bankDetails.institution,
-                accountIdentifier: bankDetails.accountIdentifier
-              })
-            }),
-            fetch(nairaRateEndpoint, {
-              headers: apiHeaders
+        const [accountNameResponse, nairaRateResponse] = await Promise.all([
+          fetch(verifyAccountEndpoint, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            },
+            body: JSON.stringify({
+              institution: bankDetails.institution,
+              accountIdentifier: bankDetails.accountIdentifier
             })
-          ])
-          
-          // Handle successful responses
-          if (accountNameResponse.ok) {
-            const accountData = await accountNameResponse.json()
-            if (accountData.data?.accountName) {
-              accountName = accountData.data.accountName
-              console.log('Account verification successful:', accountName)
+          }),
+          fetch(nairaRateEndpoint, {
+            headers: { 
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
             }
-        } else {
-            console.warn('Account verification failed:', await accountNameResponse.text())
-          }
-          
-          if (nairaRateResponse.ok) {
-            const rateData = await nairaRateResponse.json()
-            if (rateData.data && !isNaN(parseFloat(rateData.data))) {
-              rate = parseFloat(rateData.data)
-              console.log('Rate fetched successfully:', rate)
-            }
-          } else {
-            console.warn('Rate fetch failed:', await nairaRateResponse.text())
-          }
-        } catch (apiError) {
-          console.error('API error fetching account details or rate:', apiError)
-          // Mark that we're experiencing CORS errors
-          localStorage.setItem('corsErrorsDetected', 'true')
+          })
+        ])
+        
+        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
+          console.error('Failed to fetch account details or rate')
+          return null
         }
+        
+        const accountData = await accountNameResponse.json()
+        const rateData = await nairaRateResponse.json()
+        
+        if (!accountData.data || !rateData.data) {
+          console.error('Invalid response from Paycrest API')
+          return null
+        }
+        
+        const accountName = accountData.data?.accountName || "Unknown Account"
+        const rate = rateData.data || DEFAULT_RATE
+        
+        console.log('Account verification successful:', accountName)
+        console.log('Current Naira rate:', rate)
         
         // Step 2: Create the order with the correct payload format
         const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
+        
+        // Get connected wallet address for return address, fallback to default
+        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
+        
+        // ENSURE Solana addresses are never sent to Paycrest API
+        if (walletType === 'svm' || isSolanaAddress(walletAddress)) {
+          console.log('Solana address detected, using default destination address for returnAddress')
+          walletAddress = DEFAULT_DESTINATION_ADDRESS
+        } else {
+          // Even for EVM addresses, validate to be safe
+          walletAddress = getValidReturnAddress(walletAddress)
+        }
         
         // Generate a unique reference
         const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
@@ -1372,92 +1122,72 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         console.log('Sending order payload:', orderPayload)
         
-        try {
-          const orderResponse = await fetch(createOrderEndpoint, {
-            method: "POST",
-            headers: apiHeaders,
-            body: JSON.stringify(orderPayload)
-          })
-          
-          if (orderResponse.ok) {
-            const orderData = await orderResponse.json()
-            
-            if (orderData.data) {
-              console.log('Order creation successful:', orderData.data)
-              
-              // Save order details
-              localStorage.setItem('paycrestOrderId', orderData.data.id)
-              localStorage.setItem('paycrestReference', reference)
-              localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
-              localStorage.setItem('lastOrderTimestamp', now.toString())
-              
-              // Save and use the new receive address
-              const receiveAddress = orderData.data.receiveAddress
-              if (receiveAddress) {
-                console.log('New receive address generated:', receiveAddress)
-                localStorage.setItem('paycrestReceiveAddress', receiveAddress)
-                setDestinationAddress(receiveAddress)
-                
-                // Save connected wallet address for future use
-                if (walletAddress && walletAddress !== DEFAULT_DESTINATION_ADDRESS) {
-                  localStorage.setItem('connectedWalletAddress', walletAddress)
-                }
-                
-                // Trigger storage event for other components
-                window.dispatchEvent(new StorageEvent('storage', {
-                  key: 'paycrestReceiveAddress',
-                  newValue: receiveAddress
-                }))
-                
-                // Mark last valid order
-                lastValidOrderRef.current = {
-                  address: receiveAddress,
-                  timestamp: now
-                }
-                
-                // Clear the CORS error flag if we succeeded
-                localStorage.setItem('corsErrorsDetected', 'false')
-                
-                setOrderStatus('valid')
-                return receiveAddress
-              }
-            } else {
-              console.error('Order creation response missing data:', orderData)
-            }
-          } else {
-            const errorText = await orderResponse.text()
-            console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
-            
-            // If it's a CORS error or 4xx client error
-            if (orderResponse.status === 0 || (orderResponse.status >= 400 && orderResponse.status < 500)) {
-              localStorage.setItem('corsErrorsDetected', 'true')
-            }
-          }
-        } catch (orderError) {
-          console.error('Error creating order:', orderError)
-          localStorage.setItem('corsErrorsDetected', 'true')
+        const orderResponse = await fetch(createOrderEndpoint, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+          },
+          body: JSON.stringify(orderPayload)
+        })
+        
+        if (!orderResponse.ok) {
+          const errorText = await orderResponse.text()
+          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
+          return null
         }
         
-        // If we reach here, the API calls failed but we still need to return a valid address
-        // Use the default address as fallback
-        console.warn('Using default destination address as fallback after API failure')
-        setDestinationAddress(DEFAULT_DESTINATION_ADDRESS)
-        return DEFAULT_DESTINATION_ADDRESS
+        const orderData = await orderResponse.json()
         
+        if (!orderData.data) {
+          console.error('Order creation failed:', orderData.message || 'Unknown error')
+          return null
+        }
+        
+        console.log('Order creation successful:', orderData.data)
+        
+        // Save order details
+        localStorage.setItem('paycrestOrderId', orderData.data.id)
+        localStorage.setItem('paycrestReference', reference)
+        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        localStorage.setItem('lastOrderTimestamp', now.toString())
+        
+        // Save and use the new receive address
+        const receiveAddress = orderData.data.receiveAddress
+        if (receiveAddress) {
+          console.log('New receive address generated:', receiveAddress)
+          localStorage.setItem('paycrestReceiveAddress', receiveAddress)
+          setDestinationAddress(receiveAddress)
+          
+          // Save connected wallet address for future use
+          if (walletAddress && walletAddress !== DEFAULT_DESTINATION_ADDRESS) {
+            localStorage.setItem('connectedWalletAddress', walletAddress)
+          }
+          
+          // Trigger storage event for other components
+          window.dispatchEvent(new StorageEvent('storage', {
+            key: 'paycrestReceiveAddress',
+            newValue: receiveAddress
+          }))
+          
+          // Mark last valid order
+          lastValidOrderRef.current = {
+            address: receiveAddress,
+            timestamp: now
+          }
+          
+          setOrderStatus('valid')
+          return receiveAddress
+        }
+        
+        return null
       } catch (error) {
         console.error('API request failed:', error)
-        
-        // Use the default address as fallback
-        console.warn('Using default destination address as fallback after error')
-        setDestinationAddress(DEFAULT_DESTINATION_ADDRESS)
-        return DEFAULT_DESTINATION_ADDRESS
+        return null
       }
     } catch (error) {
       console.error('Error creating order:', error)
-      
-      // Final fallback
-      setDestinationAddress(DEFAULT_DESTINATION_ADDRESS)
-      return DEFAULT_DESTINATION_ADDRESS
+      return null
     }
   }
 
@@ -1504,28 +1234,10 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
     
     try {
-      // Log the current connected address state
-      console.log('Current connected address:', connectedAddress)
-      console.log('Current wallet type:', walletType)
-      console.log('Current destination address before swap:', destinationAddress)
-      
       // Force create new order after successful swap
       // Using true parameter to force creation regardless of time since last order
       const newAddress = await createNewOrder(true)
       console.log('New receive address after successful swap:', newAddress)
-      
-      if (!newAddress) {
-        console.error('Failed to generate new receive address after swap')
-        // Try to log why this might have failed
-        const storedAddress = localStorage.getItem('paycrestReceiveAddress')
-        console.log('Stored Paycrest address:', storedAddress)
-        
-        // Try with a fallback approach
-        if (storedAddress) {
-          console.log('Using stored address as fallback')
-          setDestinationAddress(storedAddress)
-        }
-      }
       
       // If we have a parent success callback, also call it
       if (onSwapSuccess) {
@@ -1534,23 +1246,80 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       }
     } catch (error) {
       console.error('Failed to create new order after swap:', error)
+    }
+  }
+
+  // Update handleAnalyticEvent function to track SWAP_SUCCESS and SWAP_MODAL_CLOSED sequence
+  const handleAnalyticEvent = (e: any) => {
+    if (!e || !e.eventName) return
+
+    console.log('[Widget Event]', e.eventName, e.data)
+
+    // Force update recipient in quote data
+    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
+      console.log(`ENFORCING RECIPIENT IN QUOTE REQUEST:`, destinationAddress)
+      e.data.parameters.recipient = destinationAddress
+    }
+    
+    // Handle successful swap
+    if (e.eventName === 'SWAP_SUCCESS') {
+      console.log("SWAP_SUCCESS event detected, creating new address")
+      setSwapSuccessOccurred(true) // Mark that swap success has occurred
+      handleSwapSuccess()
+    }
+
+    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+    if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
+      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+      // Reset the flag
+      setSwapSuccessOccurred(false)
       
-      // Don't crash the flow - try to recover with existing address if available
-      const storedAddress = localStorage.getItem('paycrestReceiveAddress')
-      if (storedAddress) {
-        console.log('Using stored address after error recovery')
-        setDestinationAddress(storedAddress)
-      }
-      
-      // Still call the parent handler
-      if (onSwapSuccess) {
-        try {
-          await onSwapSuccess(JSON.parse(storedBank))
-        } catch (callbackError) {
-          console.error('Error in parent swap success handler:', callbackError)
+      // Add a small delay to ensure all operations complete before logout
+      setTimeout(() => {
+        if (authenticated && logout) {
+          // Clear local storage
+          localStorage.removeItem('paycrestReceiveAddress')
+          localStorage.removeItem('paycrestOrderId')
+          localStorage.removeItem('paycrestReference')
+          localStorage.removeItem('paycrestValidUntil')
+          localStorage.removeItem('lastOrderTimestamp')
+          
+          // Log the user out
+          logout()
+            .then(() => {
+              console.log('User logged out successfully after swap')
+              // Reload the page to ensure clean state
+              window.location.reload()
+            })
+            .catch(err => {
+              console.error('Failed to log out user:', err)
+            })
         }
+      }, 1000)
+    }
+    
+    // Handle wallet selector events
+    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
+      console.log("Wallet selector triggered:", e.data)
+      if (e.data && e.data.context === 'not_connected') {
+        console.log("Initiating wallet connection flow")
+        
+        // Set wallet type directly if it's a Solana wallet
+        if (e.data.wallet_type && 
+            (e.data.wallet_type.toLowerCase().includes('solana') ||
+             e.data.wallet_type.toLowerCase().includes('phantom') ||
+             e.data.wallet_type.toLowerCase().includes('svm'))) {
+          console.log("Setting wallet type to Solana")
+          setWalletType('svm')
+        }
+        
+        handleWalletConnection(e.data.wallet_type)
       }
     }
+    
+    // Dispatch custom event for external listeners
+    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
+    window.dispatchEvent(customEvent)
   }
 
   return (
@@ -1578,88 +1347,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               onLinkNewWallet={() => {}}
               linkedWallets={[]}
               wallet={adaptedWallet}
-              onAnalyticEvent={(eventName, data) => {
-                console.log(`[Widget Event] ${eventName}`, data)
-                
-                // Force update recipient in quote data
-                if (eventName === 'QUOTE_REQUESTED' && data && data.parameters) {
-                  // Log the original recipient for debugging
-                  if (data.parameters.recipient) {
-                    console.log(`Original recipient in quote request: ${data.parameters.recipient}`)
-                    
-                    // Check if it's a Solana address
-                    if (isSolanaAddress(data.parameters.recipient)) {
-                      console.log(`Detected Solana address in quote recipient, replacing with EVM address`)
-                    }
-                  } else {
-                    console.log(`No recipient in quote request, adding destination address`)
-                  }
-                  
-                  // Always enforce our destination address
-                  console.log(`ENFORCING RECIPIENT IN QUOTE REQUEST:`, destinationAddress)
-                  data.parameters.recipient = destinationAddress
-                  
-                  // Also check if wallet_connector is specified as svm
-                  if (data.wallet_connector === 'svm') {
-                    console.log(`Solana wallet connector detected in quote request`)
-                    // Don't change wallet_connector as that's what's making the request
-                    // But log it to verify it's working properly
-                  }
-                }
-                
-                // Handle relay API requests
-                if (eventName === 'RELAY_API_REQUEST' && data && data.url) {
-                  console.log(`Relay API request to: ${data.url}`)
-                  
-                  // Look for hash parameter in URL that might contain an address
-                  if (typeof data.url === 'string' && data.url.includes('hash=')) {
-                    console.log(`Hash parameter detected in Relay API URL`)
-                    // We don't modify the URL here, just log for debugging
-                  }
-                }
-                
-                // Handle successful swap
-                if (eventName === 'SWAP_SUCCESS') {
-                  console.log("SWAP_SUCCESS event detected, creating new address")
-                  
-                  // Log transaction details for debugging
-                  if (data) {
-                    const { amount_in, amount_out, chain_id_in, chain_id_out } = data
-                    console.log(`Swap details: ${amount_in} -> ${amount_out} (chain ${chain_id_in} -> ${chain_id_out})`)
-                  }
-                  
-                  // Create new order after successful swap
-                  handleSwapSuccess()
-                }
-                
-                // Handle wallet selector events
-                if (eventName === 'WALLET_SELECTOR_SELECT') {
-                  console.log("Wallet selector triggered:", data)
-                  if (data && data.context === 'not_connected') {
-                    console.log("Initiating wallet connection flow")
-                    
-                    // Set wallet type directly if it's a Solana wallet
-                    if (data.wallet_type && 
-                        (data.wallet_type.toLowerCase().includes('solana') ||
-                         data.wallet_type.toLowerCase().includes('phantom') ||
-                         data.wallet_type.toLowerCase().includes('svm'))) {
-                      console.log("Setting wallet type to Solana")
-                      setWalletType('svm')
-                      
-                      // For Solana wallets, use default destination address
-                      // to avoid Solana address format issues
-                      localStorage.setItem('usingSolanaWallet', 'true')
-                    } else {
-                      localStorage.removeItem('usingSolanaWallet')
-                    }
-                    
-                    handleWalletConnection(data.wallet_type)
-                  }
-                }
-                
-                const customEvent = new CustomEvent('relay-analytic', { detail: { eventName, data } })
-                window.dispatchEvent(customEvent)
-              }}
+              onAnalyticEvent={handleAnalyticEvent}
             />
             
             {/* Responsive debug info */}
@@ -1786,39 +1474,9 @@ if (typeof window !== 'undefined') {
       
       /* Naira logo replacement */
       .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center img[src*="usdc.png"] {
-        content: url('https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Flag_of_Nigeria.svg/500px-Flag_of_Nigeria.svg.png') !important;
-        width: 24px !important;
-        height: 24px !important;
-        object-fit: contain !important;
-        border-radius: 50% !important;
-        display: inline-block !important;
-        vertical-align: middle !important;
+        content: url('https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75') !important;
       }
-      
-      /* Additional mobile fixes for Naira logo */
-      @media (max-width: 480px) {
-        .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center img[src*="usdc.png"] {
-          width: 20px !important;
-          height: 20px !important;
-          margin-right: 4px !important;
-        }
-        
-        /* Fix alignment for flag and token name */
-        .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center {
-          display: flex !important;
-          align-items: center !important;
-          justify-content: center !important;
-          gap: 4px !important;
-        }
-        
-        /* Ensure token text is visible properly */
-        .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_16px {
-          font-size: 14px !important;
-          line-height: 1.2 !important;
-          white-space: nowrap !important;
-        }
-      }
-      
+
       /* Enhanced responsive styles */
       .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center .relay-d_flex.relay-shrink_0.relay-pos_absolute.relay-right_0.relay-bottom_0.relay-rounded_4.relay-overflow_hidden {
         display: none !important;
