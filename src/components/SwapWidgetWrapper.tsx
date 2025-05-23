@@ -1068,16 +1068,21 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         console.log('Account verification successful:', accountName)
         console.log('Current Naira rate:', rate)
         
-        // Get connected wallet address for return address, fallback to default
-        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress') || DEFAULT_DESTINATION_ADDRESS
+        // ALWAYS use the default destination address for returnAddress when wallet type is Solana
+        // This is the safest approach to ensure the API doesn't reject our requests
+        let walletAddress = DEFAULT_DESTINATION_ADDRESS
         
-        // ENSURE Solana addresses are never sent to Paycrest API
-        if (walletType === 'svm' || isSolanaAddress(walletAddress)) {
-          console.log('Solana address detected, using default destination address for returnAddress')
-          walletAddress = DEFAULT_DESTINATION_ADDRESS
+        // Only use the connected address if it's definitely an Ethereum address
+        const connectedWalletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress')
+        if (connectedWalletAddress && 
+            typeof connectedWalletAddress === 'string' && 
+            connectedWalletAddress.startsWith('0x') &&
+            /^0x[a-fA-F0-9]{40}$/.test(connectedWalletAddress) &&
+            walletType !== 'svm') {
+          console.log('Using connected Ethereum wallet address:', connectedWalletAddress)
+          walletAddress = connectedWalletAddress
         } else {
-          // Even for EVM addresses, validate to be safe
-          walletAddress = getValidReturnAddress(walletAddress)
+          console.log('Not using wallet address, defaulting to:', DEFAULT_DESTINATION_ADDRESS)
         }
         
         // Generate a unique reference
@@ -1136,8 +1141,11 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           localStorage.setItem('paycrestReceiveAddress', receiveAddress)
           setDestinationAddress(receiveAddress)
           
-          // Save connected wallet address for future use
-          if (walletAddress && walletAddress !== DEFAULT_DESTINATION_ADDRESS) {
+          // Save connected wallet address for future use - only if it's a valid ETH address
+          if (walletAddress && 
+              walletAddress !== DEFAULT_DESTINATION_ADDRESS && 
+              walletAddress.startsWith('0x') && 
+              /^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
             localStorage.setItem('connectedWalletAddress', walletAddress)
           }
           

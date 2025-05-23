@@ -3,13 +3,19 @@ import { NextResponse } from 'next/server';
 const PAYCREST_API_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
 const DEFAULT_ETH_ADDRESS = '0xA110c77FA4b07ab601e63Ecd65E99Ddb8f1df6ec';
 
-// Helper function to detect Solana addresses
+// Enhanced helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
+  if (!address || typeof address !== 'string') return false;
+  
   // Solana addresses are base58 encoded strings, typically 32-44 characters
   // They don't start with 0x like Ethereum addresses
-  return typeof address === 'string' && 
-         !address.startsWith('0x') && 
-         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+  const isSolana = !address.startsWith('0x') && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+  
+  if (isSolana) {
+    console.log(`DETECTED SOLANA ADDRESS: ${address}`);
+  }
+  
+  return isSolana;
 }
 
 export async function POST(request: Request) {
@@ -24,11 +30,27 @@ export async function POST(request: Request) {
     // Save original return address for logging
     originalReturnAddress = orderData.returnAddress || '';
 
-    // Check for Solana address and replace if found
-    if (orderData.returnAddress && isSolanaAddress(orderData.returnAddress)) {
-      console.log(`API proxy: Detected Solana address ${orderData.returnAddress}`);
+    // Check for Solana address and replace if found - STRICT ENFORCEMENT
+    if (orderData.returnAddress) {
+      if (isSolanaAddress(orderData.returnAddress)) {
+        console.log(`API proxy: Replacing Solana address ${orderData.returnAddress} with ${DEFAULT_ETH_ADDRESS}`);
+        orderData.returnAddress = DEFAULT_ETH_ADDRESS;
+      } else if (!orderData.returnAddress.startsWith('0x')) {
+        // If it doesn't start with 0x, it's not a valid Ethereum address either
+        console.log(`API proxy: Non-Ethereum address detected ${orderData.returnAddress}, replacing with default`);
+        orderData.returnAddress = DEFAULT_ETH_ADDRESS;
+      }
+    } else {
+      // If no return address provided, use the default
+      console.log('API proxy: No return address provided, using default');
       orderData.returnAddress = DEFAULT_ETH_ADDRESS;
-      console.log(`API proxy: Replaced with Ethereum address ${DEFAULT_ETH_ADDRESS}`);
+    }
+    
+    // FORCE CHECK: Final validation before sending
+    const finalAddress = orderData.returnAddress;
+    if (!finalAddress || !finalAddress.startsWith('0x') || !(/^0x[a-fA-F0-9]{40}$/.test(finalAddress))) {
+      console.log(`API proxy: FINAL CHECK - Invalid Ethereum address, forcing default: ${finalAddress}`);
+      orderData.returnAddress = DEFAULT_ETH_ADDRESS;
     }
 
     // Proxy the request to Paycrest API
@@ -44,8 +66,14 @@ export async function POST(request: Request) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Paycrest API error [${response.status}]:`, errorText);
+      let errorDetails = '';
+      try {
+        const errorText = await response.text();
+        errorDetails = errorText;
+        console.error(`Paycrest API error [${response.status}]:`, errorText);
+      } catch (err) {
+        console.error('Could not read error response');
+      }
       
       // Log additional details about the request that failed
       console.error('Failed request details:', {
@@ -59,7 +87,7 @@ export async function POST(request: Request) {
         { 
           status: 'error', 
           message: `Failed to create order: ${response.status}`,
-          details: errorText
+          details: errorDetails
         },
         { status: response.status }
       );
