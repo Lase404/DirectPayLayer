@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateHmacSignature } from '@/utils/hmac';
 
-const PUBLIC_KEY = process.env.PAYCREST_PUBLIC_KEY || '';
-const PRIVATE_KEY = process.env.PAYCREST_PRIVATE_KEY || '';
+
+const PUBLIC_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
+const PRIVATE_KEY = 'w7Nrej-opuRPXbuEmDoYRQ04msZCvE1yBnebcAx34ck=';
+
+
 
 // Default EVM address to use when a Solana address is detected
 const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';

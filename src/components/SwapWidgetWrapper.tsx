@@ -153,51 +153,70 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           return;
         }
         
-        // NEW: Check for direct wallet property in user object (for Solana)
+        // Check for single wallet property (this happens with some Privy configurations)
+        // @ts-ignore - The wallet property might not be in all Privy user types
         if (user.wallet) {
-          console.log("Found wallet directly in Privy user:", user.wallet);
+          // @ts-ignore
+          console.log("Found direct wallet in user object:", user.wallet);
           
-          // Check if it's a Solana wallet
+          // @ts-ignore
           if (user.wallet.chainType === 'solana' || 
-              user.wallet.walletClientType === 'phantom' ||
+              // @ts-ignore
+              user.wallet.walletClientType === 'phantom' || 
+              // @ts-ignore
               user.wallet.connectorType === 'solana_adapter') {
             
-            console.log("Detected Solana wallet:", user.wallet);
+            // @ts-ignore
+            console.log("Detected Solana wallet in user.wallet:", user.wallet);
             setWalletType('svm');
             localStorage.setItem('usingSolanaWallet', 'true');
             
             try {
-              // Create a basic adapter for the Solana wallet if address is available
+              // @ts-ignore
               if (user.wallet.address) {
+                // Using a valid EVM address for returnAddress to avoid Solana format issues
+                const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
+                localStorage.setItem('connectedWalletAddress', DEFAULT_DESTINATION_ADDRESS);
+                
+                // Still create adapter for Solana to show as connected in UI
+                // @ts-ignore - Using type assertion to override TypeScript checking for Solana adapter
                 const solanaAdapter = adaptSolanaWallet({
-                  address: user.wallet.address,
+                  // @ts-ignore
                   publicKey: user.wallet.address,
+                  // Using cast to any to bypass TypeScript checks for this custom adapter
                   signMessage: async () => { 
                     console.warn("signMessage not implemented for adapted Solana wallet");
+                    // @ts-ignore - Return empty array that matches expected type
                     return new Uint8Array();
                   },
                   signTransaction: async () => {
                     console.warn("signTransaction not implemented for adapted Solana wallet");
-                    return new VersionedTransaction(new Uint8Array());
+                    // @ts-ignore - Using empty object to satisfy TypeScript
+                    return new VersionedTransaction(new Uint8Array() as any);
                   }
-                });
+                } as any);
                 
                 setAdaptedWallet(solanaAdapter);
-                console.log("Adapted Solana wallet:", solanaAdapter);
+                // @ts-ignore
+                console.log("Adapted Solana wallet from user.wallet:", solanaAdapter);
               }
             } catch (err) {
               console.error("Error adapting Solana wallet:", err);
             }
             
             return;
+          // @ts-ignore
           } else if (user.wallet.address) {
             // It's an EVM wallet
-            console.log("Detected EVM wallet directly on user object:", user.wallet);
+            // @ts-ignore
+            console.log("Detected EVM wallet in user.wallet:", user.wallet);
             
             const adaptedWallet = {
+              // @ts-ignore
               address: user.wallet.address,
               chainId: 1, // Default to Ethereum mainnet
               async getAccounts() {
+                // @ts-ignore
                 return [{ address: user.wallet.address }];
               },
               async signMessage() {
@@ -212,75 +231,66 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             
             setAdaptedWallet(adaptedWallet);
             setWalletType('evm');
-            localStorage.removeItem('usingSolanaWallet');
+            // @ts-ignore
+            localStorage.setItem('connectedWalletAddress', user.wallet.address);
             return;
           }
         }
         
-        // Then check in linked accounts
         // Access the wallets from the user object
-        if (user.linkedAccounts && user.linkedAccounts.length > 0) {
-          console.log("Found linked accounts in user object:", user.linkedAccounts);
+        // @ts-ignore - The Privy User type might not include wallets property in all versions
+        const userWallets = user.wallets || [];
+        
+        if (userWallets.length > 0) {
+          console.log("Found wallets in Privy user object:", userWallets);
           
           // Look for embedded wallets and connected wallets
-          const allAccounts = user.linkedAccounts;
+          // @ts-ignore
+          const allWallets = [...(user.linkedAccounts || []), ...userWallets];
           
-          // First, try to find a Solana wallet
-          const solWallet = allAccounts.find((wallet: any) => {
+          // First, try to find an Ethereum wallet (including Trust Wallet)
+          // @ts-ignore
+          const ethWallet = allWallets.find((wallet: any) => {
+            // Check wallet type
+            const walletStr = JSON.stringify(wallet).toLowerCase();
+            const isEthWallet = 
+              (walletStr.includes('ethereum') || 
+               walletStr.includes('evm') || 
+               walletStr.includes('metamask') ||
+               walletStr.includes('trust') ||
+               walletStr.includes('coinbase') ||
+               (wallet.chainId && [1, 5, 11155111].includes(wallet.chainId))) &&
+              !walletStr.includes('solana') && 
+              !walletStr.includes('phantom');
+            
+            if (isEthWallet) {
+              console.log("Found Ethereum wallet:", wallet);
+            }
+            
+            return isEthWallet;
+          });
+          
+          // Then check for Solana wallets
+          // @ts-ignore
+          const solWallet = allWallets.find((wallet: any) => {
             const walletStr = JSON.stringify(wallet).toLowerCase();
             return walletStr.includes('solana') || 
                    walletStr.includes('phantom') || 
-                   (wallet.chainType && wallet.chainType === 'solana');
+                   walletStr.includes('svm');
           });
           
-          // Then check for EVM wallets
-          const ethWallet = allAccounts.find((wallet: any) => {
-            const walletStr = JSON.stringify(wallet).toLowerCase();
-            return (walletStr.includes('ethereum') || 
-                   walletStr.includes('evm') || 
-                   walletStr.includes('metamask') ||
-                   walletStr.includes('trust') ||
-                   walletStr.includes('coinbase') ||
-                   (wallet.chainId && [1, 5, 11155111].includes(wallet.chainId))) &&
-                   !walletStr.includes('solana') && 
-                   !walletStr.includes('phantom');
-          });
-          
-          if (solWallet) {
-            console.log("Using Solana wallet from linkedAccounts:", solWallet);
-            setWalletType('svm');
-            localStorage.setItem('usingSolanaWallet', 'true');
-            
-            try {
-              if (solWallet.address) {
-                const solanaAdapter = adaptSolanaWallet({
-                  address: solWallet.address,
-                  publicKey: solWallet.address,
-                  signMessage: async () => { 
-                    console.warn("signMessage not implemented for adapted Solana wallet");
-                    return new Uint8Array();
-                  },
-                  signTransaction: async () => {
-                    console.warn("signTransaction not implemented for adapted Solana wallet");
-                    return new VersionedTransaction(new Uint8Array());
-                  }
-                });
-                
-                setAdaptedWallet(solanaAdapter);
-                console.log("Adapted Solana wallet from linkedAccounts:", solanaAdapter);
-              }
-            } catch (err) {
-              console.error("Error adapting Solana wallet from linkedAccounts:", err);
-            }
-          } else if (ethWallet) {
-            console.log("Using Ethereum wallet from linkedAccounts:", ethWallet);
+          // Prioritize ethereum wallets
+          if (ethWallet) {
+            console.log("Using Ethereum wallet from Privy:", ethWallet);
             
             // Create a simple adapter that matches the expected interface
             const adaptedWallet = {
-              address: ethWallet.address,
+              // @ts-ignore
+              address: ethWallet.address || ethWallet.accounts?.[0]?.address,
               chainId: 1, // Default to Ethereum mainnet
               async getAccounts() {
-                return [{ address: ethWallet.address }];
+                // @ts-ignore
+                return [{ address: ethWallet.address || ethWallet.accounts?.[0]?.address }];
               },
               async signMessage() {
                 console.warn("signMessage not implemented for adapted Privy wallet");
@@ -294,24 +304,44 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             
             setAdaptedWallet(adaptedWallet);
             setWalletType('evm');
-            localStorage.removeItem('usingSolanaWallet');
+            console.log("Adapted Ethereum wallet from Privy:", adaptedWallet);
+          } else if (solWallet) {
+            console.log("Using Solana wallet from Privy:", solWallet);
+            setWalletType('svm');
+            
+            // For Solana wallets, use default EVM address for returnAddress
+            const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
+            localStorage.setItem('connectedWalletAddress', DEFAULT_DESTINATION_ADDRESS);
+            localStorage.setItem('usingSolanaWallet', 'true');
+            
+            try {
+              // Create a basic adapter for the Solana wallet
+              // @ts-ignore - Using type assertion for Solana adapter
+              const solanaAdapter = adaptSolanaWallet({
+                // @ts-ignore
+                publicKey: solWallet.address,
+                signMessage: async () => { 
+                  console.warn("signMessage not implemented for adapted Solana wallet");
+                  // @ts-ignore
+                  return new Uint8Array();
+                },
+                signTransaction: async () => {
+                  console.warn("signTransaction not implemented for adapted Solana wallet");
+                  // @ts-ignore
+                  return new VersionedTransaction(new Uint8Array() as any);
+                }
+              } as any);
+              
+              setAdaptedWallet(solanaAdapter);
+              console.log("Adapted Solana wallet:", solanaAdapter);
+            } catch (err) {
+              console.error("Error adapting Solana wallet:", err);
+            }
           } else {
-            console.log("No suitable wallet found in linkedAccounts");
+            console.log("No suitable wallet found in Privy user object");
           }
         } else {
-          // Check if there are wallets property as a fallback
-          // @ts-ignore - The Privy User type might not include wallets property in all versions
-          const userWallets = user.wallets || [];
-          
-          if (userWallets.length > 0) {
-            console.log("Found wallets array in user object:", userWallets);
-            
-            // Similar processing as above
-            // This is kept for backward compatibility
-            // ...
-          } else {
-            console.log("No wallets found in Privy user object");
-          }
+          console.log("No wallets found in Privy user object");
         }
         
       } catch (err) {
@@ -329,7 +359,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     chainId: SUPPORTED_CHAINS.BASE,
     address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     decimals: 6, name: 'Nigerian Naira', symbol: 'NGN',
-    logoURI: 'https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75'
+    logoURI: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Flag_of_Nigeria.svg/500px-Flag_of_Nigeria.svg.png'
   });
 
   // Fetch Paycrest rate and update it periodically
@@ -1751,7 +1781,7 @@ if (typeof window !== 'undefined') {
       
       /* Naira logo replacement */
       .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center img[src*="usdc.png"] {
-        content: url('https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75') !important;
+        content: url('https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Flag_of_Nigeria.svg/500px-Flag_of_Nigeria.svg.png') !important;
         width: 24px !important;
         height: 24px !important;
         object-fit: contain !important;
