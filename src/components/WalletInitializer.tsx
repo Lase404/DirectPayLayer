@@ -58,11 +58,4 @@ export default function WalletInitializer() {
 
   // This component doesn't render anything visible
   return null;
-}
-
-// Add this to your global types
-declare global {
-  interface Window {
-    walletConnectInitialized?: boolean;
-  }
 } 

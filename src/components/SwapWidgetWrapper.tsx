@@ -42,13 +42,6 @@ if (typeof window !== 'undefined') {
   window.walletConnectInitialized = window.walletConnectInitialized || false;
 }
 
-// Add the type declaration for the global variable
-declare global {
-  interface Window {
-    walletConnectInitialized: boolean;
-  }
-}
-
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
   // Solana addresses are base58 encoded strings, typically 32-44 characters
