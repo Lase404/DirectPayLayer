@@ -165,6 +165,7 @@ interface PrivyWalletAccount {
   chainId?: number;
   connector?: any;
   walletClient?: any;
+  balance?: string;
 }
 
 // Update the component to accept props
@@ -258,27 +259,30 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           console.log("Found Solana wallet:", solanaWallet);
             setWalletType('svm');
           
-          // Create a proper Solana wallet interface
+          // Create a proper Solana wallet interface with balance support
           const solanaInterface = {
             publicKey: solanaWallet.address,
             signTransaction: async (transaction: VersionedTransaction | Transaction) => {
-              // This will be handled by Privy's wallet interface
               return transaction;
             },
             signAllTransactions: async (transactions: (VersionedTransaction | Transaction)[]) => {
-              // This will be handled by Privy's wallet interface
               return transactions;
             },
             signMessage: async (message: Uint8Array) => {
-              // This will be handled by Privy's wallet interface
               return message;
+            },
+            // Add balance property
+            balance: solanaWallet.balance,
+            // Add method to get balance
+            getBalance: async () => {
+              return solanaWallet.balance || '0';
             }
           };
           
           // Now adapt the properly formatted wallet
           const adapted = await adaptSolanaWallet(solanaInterface);
           setAdaptedWallet(adapted);
-          console.log("Solana wallet adapted:", adapted);
+          console.log("Solana wallet adapted with balance:", adapted);
         }
       } catch (err) {
         console.error("Error setting up wallet:", err);
@@ -1260,25 +1264,41 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 
   // Add this effect to handle wallet balance display
   useEffect(() => {
-    if (adaptedWallet && walletType) {
-      // Force a refresh of the wallet balance display
-      const refreshBalance = () => {
-        const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
-        balanceElements.forEach(element => {
-          if (element.textContent?.includes('Balance:')) {
-            // Trigger a re-render by updating the element
-            element.setAttribute('data-balance-updated', Date.now().toString());
-          }
-        });
-      };
+    if (!adaptedWallet || !walletType) return;
 
-      // Initial refresh
-      refreshBalance();
+    const updateBalanceDisplay = () => {
+      const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
+      balanceElements.forEach(element => {
+        if (element.textContent?.includes('Balance:')) {
+          // Force balance update by triggering a re-render
+          element.setAttribute('data-balance-refresh', Date.now().toString());
+        }
+      });
+    };
 
-      // Set up periodic refresh
-      const interval = setInterval(refreshBalance, 2000);
-    return () => clearInterval(interval);
-    }
+    // Initial update
+    updateBalanceDisplay();
+
+    // Set up periodic balance updates
+    const interval = setInterval(updateBalanceDisplay, 3000);
+
+    // Add styles to ensure balance is visible
+    const style = document.createElement('style');
+    style.textContent = `
+      .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px {
+        opacity: 1 !important;
+        visibility: visible !important;
+      }
+      [data-balance-refresh] {
+        display: inline-block !important;
+      }
+    `;
+    document.head.appendChild(style);
+
+    return () => {
+      clearInterval(interval);
+      style.remove();
+    };
   }, [adaptedWallet, walletType]);
 
   return (
