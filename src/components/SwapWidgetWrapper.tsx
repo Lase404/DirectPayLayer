@@ -1403,32 +1403,35 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         ) : (
           <>
             {/* Add SlippageToleranceConfig before SwapWidget */}
-            <div className="slippage-config-container mb-3">
-              <SlippageToleranceConfig
-                setSlippageTolerance={setSlippageTolerance}
+            <div className="swap-widget-container relative">
+              {/* Position slippage button at the right side */}
+              <div className="slippage-config-container absolute right-0 top-2 z-10">
+                <SlippageToleranceConfig
+                  setSlippageTolerance={setSlippageTolerance}
+                  onAnalyticEvent={handleAnalyticEvent}
+                />
+              </div>
+
+              <SwapWidget
+                fromToken={fromToken}
+                setFromToken={(token) => token && setFromTokenState(token)}
+                toToken={toToken}
+                setToToken={(token) => token && setToTokenState(token)}
+                lockFromToken={false}
+                lockToToken={true}
+                supportedWalletVMs={['evm', 'svm']}
+                onConnectWallet={handleWalletConnection}
+                defaultToAddress={destinationAddress as `0x${string}`}
+                multiWalletSupportEnabled={true}
+                onSetPrimaryWallet={() => {}}
+                onLinkNewWallet={() => {}}
+                linkedWallets={[]}
+                wallet={adaptedWallet}
                 onAnalyticEvent={handleAnalyticEvent}
+                slippageTolerance={slippageTolerance}
+                defaultAmount={defaultAmount}
               />
             </div>
-
-            <SwapWidget
-              fromToken={fromToken}
-              setFromToken={(token) => token && setFromTokenState(token)}
-              toToken={toToken}
-              setToToken={(token) => token && setToTokenState(token)}
-              lockFromToken={false}
-              lockToToken={true}
-              supportedWalletVMs={['evm', 'svm']}
-              onConnectWallet={handleWalletConnection}
-              defaultToAddress={destinationAddress as `0x${string}`}
-              multiWalletSupportEnabled={true}
-              onSetPrimaryWallet={() => {}}
-              onLinkNewWallet={() => {}}
-              linkedWallets={[]}
-              wallet={adaptedWallet}
-              onAnalyticEvent={handleAnalyticEvent}
-              slippageTolerance={slippageTolerance}
-              defaultAmount={defaultAmount}
-            />
               
             {/* Responsive debug info */}
             <div style={{ 
