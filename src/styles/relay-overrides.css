@@ -228,3 +228,88 @@ body.dev-mode input[type="text"][inputmode="decimal"].naira-value {
   transform: translateZ(0);
   backface-visibility: hidden;
 }
+
+/* Add styles for slippage configuration */
+.relay-slippage-popover {
+  background-color: #23262f !important;
+  border-color: rgba(255,255,255,0.1) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2) !important;
+  margin-bottom: 8px !important;
+}
+
+.relay-slippage-popover .relay-text {
+  color: #ffffff !important;
+}
+
+.relay-slippage-popover .relay-button {
+  background-color: #333741 !important;
+  color: #ffffff !important;
+  border-radius: 8px !important;
+}
+
+.relay-slippage-popover .relay-button:hover {
+  background-color: #444a57 !important;
+}
+
+.relay-slippage-popover .relay-button.relay-bg_primary {
+  background-color: #3b82f6 !important;
+  color: #ffffff !important;
+}
+
+.relay-slippage-popover .relay-button.relay-bg_primary:hover {
+  background-color: #2563eb !important;
+}
+
+.relay-slippage-popover .relay-input {
+  background-color: #333741 !important;
+  border-color: rgba(255,255,255,0.1) !important;
+  color: #ffffff !important;
+}
+
+/* Additional Swap Widget styles */
+.relay-button-group button {
+  background-color: #333741 !important;
+  border-color: rgba(255,255,255,0.1) !important;
+  color: #ffffff !important;
+}
+
+.relay-button-group button:hover {
+  background-color: #444a57 !important;
+}
+
+.relay-button-group button.relay-bg_primary {
+  background-color: #3b82f6 !important;
+}
+
+/* IMPORTANT: Add specific styles for the balance selection buttons */
+.relay-d_inline-flex.relay-gap_1.relay-items_center.relay-mt_1 button {
+  background-color: #3b82f6 !important;
+  color: white !important;
+  border-radius: 6px !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  margin-right: 4px !important;
+}
+
+.relay-d_inline-flex.relay-gap_1.relay-items_center.relay-mt_1 button:hover {
+  background-color: #2563eb !important;
+}
+
+/* Add slippage control styles */
+.slippage-config-container {
+  background-color: #2d3039;
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Add styles to make sure the balance text is visible */
+.relay-d_flex.relay-items_center.relay-justify_space-between.relay-w_100\\%.relay-mt_3 {
+  color: #ffffff !important;
+}
+
+.relay-d_flex.relay-items_center.relay-justify_space-between.relay-w_100\\%.relay-mt_3 .relay-text {
+  color: #ffffff !important;
+}

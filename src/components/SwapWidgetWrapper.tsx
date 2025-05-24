@@ -125,9 +125,9 @@ if (typeof window !== 'undefined') {
           const data = JSON.parse(body);
           if (data.returnAddress) {
             if (isSolanaAddress(data.returnAddress)) {
-              const validReturnAddress = getValidReturnAddress(data.returnAddress);
-              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validReturnAddress}`);
-              data.returnAddress = validReturnAddress;
+              const validAddress = getValidReturnAddress(data.returnAddress);
+              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validAddress}`);
+              data.returnAddress = validAddress;
               
               // Return modified body
               return originalXHRSend.call(this, JSON.stringify(data));
@@ -172,6 +172,9 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const { data: walletClient } = useWalletClient()
   const containerRef = useRef<HTMLDivElement>(null)
   
+  // Add slippage tolerance state
+  const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
+  
   // Simplified state
   const [nairaAmount, setNairaAmount] = useState("0.00")
   const [paycrestRate, setPaycrestRate] = useState(DEFAULT_RATE)
@@ -191,8 +194,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
   
-  // Add slippage tolerance state
-  const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
+  // Add state for default amount to trigger balance display
+  const [defaultAmount, setDefaultAmount] = useState<string | undefined>(undefined)
   
   // Transaction tracking state
   const [showTransactionTracker, setShowTransactionTracker] = useState(false)
@@ -239,28 +242,38 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
-        console.log("Setting up wallet with Privy user:", user);
-        
         // Check for EVM wallet
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
           console.log("EVM wallet adapted:", adapted);
+          
+          // Set a very small default amount to trigger balance display
+          // setTimeout prevents race conditions with the wallet adaptation
+          setTimeout(() => {
+            setDefaultAmount('0.000001');
+            
+            // Clear it after a delay to let the user input their own amount
+            setTimeout(() => {
+              setDefaultAmount(undefined);
+            }, 800);
+          }, 500);
+          
           return;
         }
         
-        // Get all wallets from Privy
-        // @ts-ignore - The Privy User type might not include wallets property in all versions
-        const wallets = user.wallets || [];
+        // Check for Solana wallet in user's linked wallets from Privy
+        console.log("Checking for Solana wallet in Privy user object:", user);
         
-        if (wallets.length > 0) {
-          console.log("Privy wallets available:", wallets);
-          
-          // First try to find a Solana wallet
+        // Access the wallets from the user object (Privy API may vary)
+        // @ts-ignore - The Privy User type might not include wallets property in all versions
+        if (user.wallets && user.wallets.length > 0) {
+          // Look for a Solana wallet
           // @ts-ignore
-          const solanaWallet = wallets.find((wallet: any) => {
+          const solanaWallet = user.wallets.find((wallet: any) => {
             // Different Privy versions might structure this differently
+            // Look for any property indicating a Solana wallet
             const walletStr = JSON.stringify(wallet).toLowerCase();
             return walletStr.includes('solana') || 
                    walletStr.includes('phantom') || 
@@ -268,45 +281,15 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           });
           
           if (solanaWallet) {
-            console.log("Found Solana wallet:", solanaWallet);
-            try {
-              // Try to adapt the Solana wallet
-              const adapted = await adaptSolanaWallet(solanaWallet);
-              setAdaptedWallet(adapted);
-              setWalletType('svm');
-              console.log("Solana wallet adapted:", adapted);
-              return;
-            } catch (err) {
-              console.error("Failed to adapt Solana wallet:", err);
-            }
-          }
-          
-          // If no Solana wallet or adaptation failed, try to use any other wallet
-          // @ts-ignore
-          for (const wallet of wallets) {
-            try {
-              // For EVM compatible wallets not caught by wagmi
-              if (wallet.address && wallet.address.startsWith('0x')) {
-                console.log("Found alternative EVM wallet:", wallet);
-                // Create a simple adapter that provides the minimum required interface
-                const simpleAdapter = {
-                  getAddress: async () => wallet.address,
-                  sendTransaction: async () => { throw new Error("Not implemented"); },
-                  signMessage: async () => { throw new Error("Not implemented"); },
-                  signTypedData: async () => { throw new Error("Not implemented"); }
-                };
-                setAdaptedWallet(simpleAdapter);
-                setWalletType('evm');
-                console.log("Using simple EVM adapter for wallet:", wallet.address);
-                return;
-              }
-            } catch (err) {
-              console.error("Failed to adapt wallet:", wallet, err);
-            }
+            console.log("Found potential Solana wallet:", solanaWallet);
+            
+            // Here you would use your adaptSolanaWallet utility
+            // For now, just log that we found it
+            setWalletType('svm');
+            console.log("Solana wallet detected but not fully implemented");
           }
         }
         
-        console.log("No suitable wallet found, user needs to connect one");
       } catch (err) {
         console.error("Error setting up wallet:", err);
       }
@@ -314,6 +297,27 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     
     setupWallet();
   }, [ready, user, walletClient]);
+  
+  // Add a dedicated effect to monitor wallet connection status and refresh the UI
+  useEffect(() => {
+    const checkWalletStatus = async () => {
+      if (adaptedWallet) {
+        console.log("Wallet connected, refreshing UI elements");
+        
+        // Force a UI update to show balance controls
+        setDefaultAmount('0.000001');
+        
+        // Clear after a short delay
+        const timer = setTimeout(() => {
+          setDefaultAmount(undefined);
+        }, 800);
+        
+        return () => clearTimeout(timer);
+      }
+    };
+    
+    checkWalletStatus();
+  }, [adaptedWallet, connectedAddress]);
   
   // Define tokens outside of render cycle
   const [fromToken, setFromTokenState] = useState<Token | undefined>(undefined);
@@ -768,43 +772,40 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     };
   }, [paycrestRate]);
 
-  // Enhanced wallet connection handler
+  // Enhanced wallet connection handler with better error handling
   const handleWalletConnection = async (connectorType?: string) => {
     console.log("Wallet connection requested, type:", connectorType);
     
-    if (!authenticated) {
-      console.log("User not authenticated, initiating login");
-      try {
+    try {
+      if (!authenticated) {
+        console.log("User not authenticated, initiating login");
         await login();
-        console.log("Login successful, user is now authenticated");
-      } catch (err) {
-        console.error("Login failed:", err);
-        setError("Failed to login. Please try again.");
-      }
-    } else {
-      console.log("User authenticated, linking wallet");
-      
-      try {
-        // Set wallet type based on connector before linking
-        if (connectorType) {
-          if (connectorType.toLowerCase().includes('solana') || 
-              connectorType.toLowerCase().includes('phantom')) {
-            console.log("Setting wallet type to Solana before linking");
-            setWalletType('svm');
-          } else if (connectorType.toLowerCase().includes('metamask') ||
-                    connectorType.toLowerCase().includes('walletconnect') ||
-                    connectorType.toLowerCase().includes('coinbase')) {
-            console.log("Setting wallet type to EVM before linking");
-            setWalletType('evm');
-          }
+      } else if (connectorType) {
+        console.log("Connecting specific wallet type:", connectorType);
+        // Handle specific connector types if needed
+        if (connectorType.toLowerCase().includes('solana') || 
+            connectorType.toLowerCase().includes('phantom')) {
+          console.log("Connecting Solana wallet");
+          // Set wallet type to Solana Virtual Machine
+          setWalletType('svm');
         }
-        
         await linkWallet();
-        console.log("Wallet linking initiated");
-      } catch (err) {
-        console.error("Failed to link wallet:", err);
-        setError("Failed to link wallet. Please try again.");
+      } else {
+        console.log("Connecting additional wallet");
+        await linkWallet();
       }
+      
+      // Trigger UI refresh to show balance after connection
+      setTimeout(() => {
+        setDefaultAmount('0.000001');
+        setTimeout(() => {
+          setDefaultAmount(undefined);
+        }, 1000);
+      }, 1500);
+      
+    } catch (err: any) {
+      console.error("Error connecting wallet:", err);
+      setError(`Failed to connect wallet: ${err.message || 'Unknown error'}`);
     }
   };
 
@@ -1353,6 +1354,22 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     window.dispatchEvent(customEvent)
   }
 
+  // Set a default amount after wallet connection to trigger balance display
+  useEffect(() => {
+    if (adaptedWallet) {
+      // Set a very small default amount to trigger the balance display
+      // This will be almost invisible to the user but will activate the UI elements
+      setDefaultAmount('0.000001')
+      
+      // Clear it after a short delay to let the user input their own amount
+      const timer = setTimeout(() => {
+        setDefaultAmount(undefined)
+      }, 800)
+      
+      return () => clearTimeout(timer)
+    }
+  }, [adaptedWallet])
+
   return (
     <div className="swap-page-center">
       {showTransactionTracker && currentTransaction ? (
@@ -1377,154 +1394,155 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           }}
         />
       ) : (
-        <div className="swap-card" ref={containerRef}>
-          {error ? (
-            <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
-              <p>Error: {error}</p>
-              <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
-            </div>
-          ) : (
-            <>
-              <div className="mb-4 px-2">
-                <SlippageToleranceConfig
-                  setSlippageTolerance={setSlippageTolerance}
-                  onAnalyticEvent={handleAnalyticEvent}
-                />
-              </div>
-              
-              <SwapWidget
-                fromToken={fromToken}
-                setFromToken={(token) => token && setFromTokenState(token)}
-                toToken={toToken}
-                setToToken={(token) => token && setToTokenState(token)}
-                lockFromToken={false}
-                lockToToken={true}
-                supportedWalletVMs={['evm', 'svm']}
-                onConnectWallet={handleWalletConnection}
-                defaultToAddress={destinationAddress as `0x${string}`}
-                multiWalletSupportEnabled={true}
-                onSetPrimaryWallet={() => {}}
-                onLinkNewWallet={() => {}}
-                linkedWallets={[]}
-                wallet={adaptedWallet}
+      <div className="swap-card" ref={containerRef}>
+        {error ? (
+          <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
+            <p>Error: {error}</p>
+            <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
+          </div>
+        ) : (
+          <>
+            {/* Add SlippageToleranceConfig before SwapWidget */}
+            <div className="slippage-config-container mb-3">
+              <SlippageToleranceConfig
+                setSlippageTolerance={setSlippageTolerance}
                 onAnalyticEvent={handleAnalyticEvent}
-                slippageTolerance={slippageTolerance}
-                alwaysShowBalances={true}
               />
+            </div>
+
+            <SwapWidget
+              fromToken={fromToken}
+              setFromToken={(token) => token && setFromTokenState(token)}
+              toToken={toToken}
+              setToToken={(token) => token && setToTokenState(token)}
+              lockFromToken={false}
+              lockToToken={true}
+              supportedWalletVMs={['evm', 'svm']}
+              onConnectWallet={handleWalletConnection}
+              defaultToAddress={destinationAddress as `0x${string}`}
+              multiWalletSupportEnabled={true}
+              onSetPrimaryWallet={() => {}}
+              onLinkNewWallet={() => {}}
+              linkedWallets={[]}
+              wallet={adaptedWallet}
+              onAnalyticEvent={handleAnalyticEvent}
+              slippageTolerance={slippageTolerance}
+              defaultAmount={defaultAmount}
+            />
               
-              {/* Responsive debug info */}
-              <div style={{ 
-                position: 'absolute', 
-                bottom: '8px', 
-                left: '12px', 
-                fontSize: '9px', 
-                color: 'rgba(255,255,255,0.3)',
-                userSelect: 'none',
-                maxWidth: '80%',
+            {/* Responsive debug info */}
+            <div style={{ 
+              position: 'absolute', 
+              bottom: '8px', 
+              left: '12px', 
+              fontSize: '9px', 
+              color: 'rgba(255,255,255,0.3)',
+              userSelect: 'none',
+              maxWidth: '80%',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis'
+            }}>
+              {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus} | {slippageTolerance ? `${parseInt(slippageTolerance)/100}%` : 'Auto'}
+            </div>
+            
+            {/* Responsive overlay for Naira amount */}
+            <div
+              ref={overlayRef}
+              className="responsive-overlay"
+              style={{
+                position: 'absolute',
+                top: '210px',
+                left: '130px',
+                transform: 'translateX(-50%)',
+                backgroundColor: 'transparent',
+                color: 'black',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                fontWeight: 'bold',
+                fontSize: '2.0rem',
+                zIndex: 1000,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+                width: '250px',
+                height: '50px',
                 overflow: 'hidden',
                 whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis'
-              }}>
-                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus} | Slip: {slippageTolerance || 'default'}
-              </div>
-              
-              {/* Responsive overlay for Naira amount */}
-              <div
-                ref={overlayRef}
-                className="responsive-overlay"
-                style={{
-                  position: 'absolute',
-                  top: '210px',
-                  left: '130px',
-                  transform: 'translateX(-50%)',
-                  backgroundColor: 'transparent',
-                  color: 'black',
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  fontWeight: 'bold',
-                  fontSize: '2.0rem',
-                  zIndex: 1000,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'flex-start',
-                  width: '250px',
-                  height: '50px',
-                  overflow: 'hidden',
-                  whiteSpace: 'nowrap',
-                  maxWidth: 'calc(100% - 40px)'
-                }}
-              >
-                {isLoading || isRateLoading ? (
-                  <div style={{
-                    width: '120px',
-                    height: '24px',
-                    background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
-                    backgroundSize: '200% 100%',
-                    animation: 'pulse 1.5s infinite linear',
-                    borderRadius: '4px'
-                  }} />
-                ) : (
-                  <div className="flex items-center">
-                    <span style={{ 
-                      fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
-                      transition: 'font-size 0.1s ease',
-                      textAlign: 'left',
-                      display: 'inline-block',
-                      minWidth: '240px',
-                      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                      maxWidth: '100%',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis'
-                    }}>
-                      {nairaAmount}
-                    </span>
-                    {paycrestRate === DEFAULT_RATE && (
-                      <div 
-                        className="rate-warning" 
-                        title="Using default exchange rate. Click to refresh."
-                        onClick={() => {
-                          const fetchRate = async () => {
-                            try {
-                              setIsRateLoading(true);
-                              const rate = await getRatesForOfframp();
-                              if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
-                                console.log("Rate fetched successfully:", rate.NGN);
-                                setPaycrestRate(rate.NGN);
-                                rateRef.current = rate.NGN;
-                                setError(null);
-                              }
-                            } catch (err) {
-                              console.error('Error fetching rate:', err);
-                            } finally {
-                              setIsRateLoading(false);
+                maxWidth: 'calc(100% - 40px)'
+              }}
+            >
+              {isLoading || isRateLoading ? (
+                <div style={{
+                  width: '120px',
+                  height: '24px',
+                  background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
+                  backgroundSize: '200% 100%',
+                  animation: 'pulse 1.5s infinite linear',
+                  borderRadius: '4px'
+                }} />
+              ) : (
+                <div className="flex items-center">
+                  <span style={{ 
+                    fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
+                    transition: 'font-size 0.1s ease',
+                    textAlign: 'left',
+                    display: 'inline-block',
+                    minWidth: '240px',
+                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    maxWidth: '100%',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}>
+                    {nairaAmount}
+                  </span>
+                  {paycrestRate === DEFAULT_RATE && (
+                    <div 
+                      className="rate-warning" 
+                      title="Using default exchange rate. Click to refresh."
+                      onClick={() => {
+                        const fetchRate = async () => {
+                          try {
+                            setIsRateLoading(true);
+                            const rate = await getRatesForOfframp();
+                            if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
+                              console.log("Rate fetched successfully:", rate.NGN);
+                              setPaycrestRate(rate.NGN);
+                              rateRef.current = rate.NGN;
+                              setError(null);
                             }
-                          };
-                          fetchRate();
-                        }}
-                        style={{
-                          display: 'inline-flex',
-                          marginLeft: '8px',
-                          cursor: 'pointer',
-                          backgroundColor: '#FEF3C7',
-                          color: '#D97706',
-                          borderRadius: '50%',
-                          width: '18px',
-                          height: '18px',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        !
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+                          } catch (err) {
+                            console.error('Error fetching rate:', err);
+                          } finally {
+                            setIsRateLoading(false);
+                          }
+                        };
+                        fetchRate();
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        marginLeft: '8px',
+                        cursor: 'pointer',
+                        backgroundColor: '#FEF3C7',
+                        color: '#D97706',
+                        borderRadius: '50%',
+                        width: '18px',
+                        height: '18px',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        fontSize: '12px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      !
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
       )}
     </div>
   )
@@ -1562,6 +1580,16 @@ if (typeof window !== 'undefined') {
         margin: 0 auto; 
         position: relative;
         border: 1px solid rgba(255,255,255,0.05);
+      }
+      
+      /* Slippage config styles */
+      .slippage-config-container {
+        margin-bottom: 15px;
+      }
+      
+      /* Adjust overlay position to account for slippage UI */
+      .responsive-overlay {
+        top: 230px !important;
       }
       
       @keyframes pulse { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }
