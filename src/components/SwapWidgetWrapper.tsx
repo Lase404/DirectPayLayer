@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
-import { SwapWidget } from '@reservoir0x/relay-kit-ui'
+import { SwapWidget, SlippageToleranceConfig } from '@reservoir0x/relay-kit-ui'
 import { useAccount, useWalletClient } from 'wagmi'
 import { SUPPORTED_CHAINS } from '@/utils/bridge'
 import { usePrivy } from '@privy-io/react-auth'
@@ -125,9 +125,9 @@ if (typeof window !== 'undefined') {
           const data = JSON.parse(body);
           if (data.returnAddress) {
             if (isSolanaAddress(data.returnAddress)) {
-              const validAddress = getValidReturnAddress(data.returnAddress);
-              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validAddress}`);
-              data.returnAddress = validAddress;
+              const validReturnAddress = getValidReturnAddress(data.returnAddress);
+              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validReturnAddress}`);
+              data.returnAddress = validReturnAddress;
               
               // Return modified body
               return originalXHRSend.call(this, JSON.stringify(data));
@@ -191,6 +191,9 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
   
+  // Add slippage tolerance state
+  const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
+  
   // Transaction tracking state
   const [showTransactionTracker, setShowTransactionTracker] = useState(false)
   const [currentTransaction, setCurrentTransaction] = useState<{
@@ -236,6 +239,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
+        console.log("Setting up wallet with Privy user:", user);
+        
         // Check for EVM wallet
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
@@ -245,17 +250,17 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           return;
         }
         
-        // Check for Solana wallet in user's linked wallets from Privy
-        console.log("Checking for Solana wallet in Privy user object:", user);
-        
-        // Access the wallets from the user object (Privy API may vary)
+        // Get all wallets from Privy
         // @ts-ignore - The Privy User type might not include wallets property in all versions
-        if (user.wallets && user.wallets.length > 0) {
-          // Look for a Solana wallet
+        const wallets = user.wallets || [];
+        
+        if (wallets.length > 0) {
+          console.log("Privy wallets available:", wallets);
+          
+          // First try to find a Solana wallet
           // @ts-ignore
-          const solanaWallet = user.wallets.find((wallet: any) => {
+          const solanaWallet = wallets.find((wallet: any) => {
             // Different Privy versions might structure this differently
-            // Look for any property indicating a Solana wallet
             const walletStr = JSON.stringify(wallet).toLowerCase();
             return walletStr.includes('solana') || 
                    walletStr.includes('phantom') || 
@@ -263,15 +268,45 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           });
           
           if (solanaWallet) {
-            console.log("Found potential Solana wallet:", solanaWallet);
-            
-            // Here you would use your adaptSolanaWallet utility
-            // For now, just log that we found it
-            setWalletType('svm');
-            console.log("Solana wallet detected but not fully implemented");
+            console.log("Found Solana wallet:", solanaWallet);
+            try {
+              // Try to adapt the Solana wallet
+              const adapted = await adaptSolanaWallet(solanaWallet);
+              setAdaptedWallet(adapted);
+              setWalletType('svm');
+              console.log("Solana wallet adapted:", adapted);
+              return;
+            } catch (err) {
+              console.error("Failed to adapt Solana wallet:", err);
+            }
+          }
+          
+          // If no Solana wallet or adaptation failed, try to use any other wallet
+          // @ts-ignore
+          for (const wallet of wallets) {
+            try {
+              // For EVM compatible wallets not caught by wagmi
+              if (wallet.address && wallet.address.startsWith('0x')) {
+                console.log("Found alternative EVM wallet:", wallet);
+                // Create a simple adapter that provides the minimum required interface
+                const simpleAdapter = {
+                  getAddress: async () => wallet.address,
+                  sendTransaction: async () => { throw new Error("Not implemented"); },
+                  signMessage: async () => { throw new Error("Not implemented"); },
+                  signTypedData: async () => { throw new Error("Not implemented"); }
+                };
+                setAdaptedWallet(simpleAdapter);
+                setWalletType('evm');
+                console.log("Using simple EVM adapter for wallet:", wallet.address);
+                return;
+              }
+            } catch (err) {
+              console.error("Failed to adapt wallet:", wallet, err);
+            }
           }
         }
         
+        console.log("No suitable wallet found, user needs to connect one");
       } catch (err) {
         console.error("Error setting up wallet:", err);
       }
@@ -733,25 +768,43 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     };
   }, [paycrestRate]);
 
+  // Enhanced wallet connection handler
   const handleWalletConnection = async (connectorType?: string) => {
     console.log("Wallet connection requested, type:", connectorType);
     
     if (!authenticated) {
       console.log("User not authenticated, initiating login");
-      await login();
-    } else if (connectorType) {
-      console.log("Connecting specific wallet type:", connectorType);
-      // Handle specific connector types if needed
-      if (connectorType.toLowerCase().includes('solana') || 
-          connectorType.toLowerCase().includes('phantom')) {
-        console.log("Connecting Solana wallet");
-        // Set wallet type to Solana Virtual Machine
-        setWalletType('svm');
+      try {
+        await login();
+        console.log("Login successful, user is now authenticated");
+      } catch (err) {
+        console.error("Login failed:", err);
+        setError("Failed to login. Please try again.");
       }
-      await linkWallet();
     } else {
-      console.log("Connecting additional wallet");
-      await linkWallet();
+      console.log("User authenticated, linking wallet");
+      
+      try {
+        // Set wallet type based on connector before linking
+        if (connectorType) {
+          if (connectorType.toLowerCase().includes('solana') || 
+              connectorType.toLowerCase().includes('phantom')) {
+            console.log("Setting wallet type to Solana before linking");
+            setWalletType('svm');
+          } else if (connectorType.toLowerCase().includes('metamask') ||
+                    connectorType.toLowerCase().includes('walletconnect') ||
+                    connectorType.toLowerCase().includes('coinbase')) {
+            console.log("Setting wallet type to EVM before linking");
+            setWalletType('evm');
+          }
+        }
+        
+        await linkWallet();
+        console.log("Wallet linking initiated");
+      } catch (err) {
+        console.error("Failed to link wallet:", err);
+        setError("Failed to link wallet. Please try again.");
+      }
     }
   };
 
@@ -1332,6 +1385,13 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             </div>
           ) : (
             <>
+              <div className="mb-4 px-2">
+                <SlippageToleranceConfig
+                  setSlippageTolerance={setSlippageTolerance}
+                  onAnalyticEvent={handleAnalyticEvent}
+                />
+              </div>
+              
               <SwapWidget
                 fromToken={fromToken}
                 setFromToken={(token) => token && setFromTokenState(token)}
@@ -1348,6 +1408,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                 linkedWallets={[]}
                 wallet={adaptedWallet}
                 onAnalyticEvent={handleAnalyticEvent}
+                slippageTolerance={slippageTolerance}
+                alwaysShowBalances={true}
               />
               
               {/* Responsive debug info */}
@@ -1363,7 +1425,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                 whiteSpace: 'nowrap',
                 textOverflow: 'ellipsis'
               }}>
-                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
+                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus} | Slip: {slippageTolerance || 'default'}
               </div>
               
               {/* Responsive overlay for Naira amount */}
