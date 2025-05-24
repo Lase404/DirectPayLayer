@@ -36,6 +36,19 @@ const DEFAULT_RATE = 1600
 const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
 const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
 
+// Add this global variable at the top of the file, outside the component
+// This will ensure WalletConnect is only initialized once across rerenders
+if (typeof window !== 'undefined') {
+  window.walletConnectInitialized = window.walletConnectInitialized || false;
+}
+
+// Add the type declaration for the global variable
+declare global {
+  interface Window {
+    walletConnectInitialized: boolean;
+  }
+}
+
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
   // Solana addresses are base58 encoded strings, typically 32-44 characters
@@ -242,12 +255,23 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
+        // Prevent WalletConnect from being initialized again if it's already done
+        if (typeof window !== 'undefined' && window.walletConnectInitialized) {
+          console.log("Skipping wallet setup - WalletConnect already initialized");
+          return;
+        }
+        
         // Check for EVM wallet
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
           console.log("EVM wallet adapted:", adapted);
+          
+          // Set flag to prevent future initializations
+          if (typeof window !== 'undefined') {
+            window.walletConnectInitialized = true;
+          }
           
           // Set a very small default amount to trigger balance display
           // setTimeout prevents race conditions with the wallet adaptation
@@ -772,11 +796,26 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     };
   }, [paycrestRate]);
 
-  // Enhanced wallet connection handler with better error handling
+  // Enhanced wallet connection handler with better error handling and initialization check
   const handleWalletConnection = async (connectorType?: string) => {
     console.log("Wallet connection requested, type:", connectorType);
     
     try {
+      // Check if WalletConnect is already initialized and we have an adapted wallet
+      if (typeof window !== 'undefined' && 
+          window.walletConnectInitialized && 
+          adaptedWallet) {
+        console.log("WalletConnect already initialized and wallet connected");
+        // Just refresh UI since wallet is already connected
+        setTimeout(() => {
+          setDefaultAmount('0.000001');
+          setTimeout(() => {
+            setDefaultAmount(undefined);
+          }, 800);
+        }, 300);
+        return;
+      }
+      
       if (!authenticated) {
         console.log("User not authenticated, initiating login");
         await login();
@@ -1369,6 +1408,26 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       return () => clearTimeout(timer)
     }
   }, [adaptedWallet])
+
+  useEffect(() => {
+    // Setup component and initialize WalletConnect
+    console.log("SwapWidgetWrapper mounted");
+    
+    // Cleanup function to run when component unmounts
+    return () => {
+      console.log("SwapWidgetWrapper unmounting, cleaning up");
+      
+      // Reset the initialization flag when component unmounts
+      // This allows for proper re-initialization if the component gets mounted again
+      if (typeof window !== 'undefined') {
+        console.log("Resetting WalletConnect initialization flag");
+        // To avoid breaking existing connections, we only reset in development
+        if (process.env.NODE_ENV === 'development') {
+          window.walletConnectInitialized = false;
+        }
+      }
+    };
+  }, []);
 
   return (
     <div className="swap-page-center">

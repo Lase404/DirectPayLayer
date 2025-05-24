@@ -3,6 +3,13 @@ import { Inter } from 'next/font/google'
 import './globals.css'
 import { Providers } from './providers'
 import { configureAxios } from '@/utils/axiosConfig'
+import dynamic from 'next/dynamic'
+
+// Import WalletInitializer with dynamic import to ensure client-side only rendering
+const WalletInitializer = dynamic(
+  () => import('@/components/WalletInitializer'),
+  { ssr: false }
+)
 
 // Configure axios globally
 configureAxios();
@@ -26,7 +33,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <Providers>{children}</Providers>
+        <Providers>
+          {/* Add WalletInitializer to ensure consistent WalletConnect initialization */}
+          <WalletInitializer />
+          {children}
+        </Providers>
       </body>
     </html>
   )
