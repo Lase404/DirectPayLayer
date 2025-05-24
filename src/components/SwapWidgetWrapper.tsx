@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { SwapWidget, SlippageToleranceConfig } from '@reservoir0x/relay-kit-ui'
 import { useAccount, useWalletClient } from 'wagmi'
 import { SUPPORTED_CHAINS } from '@/utils/bridge'
@@ -9,9 +9,8 @@ import '@/styles/relay-overrides.css'
 import { getRatesForOfframp } from '@/utils/paycrest'
 import { adaptViemWallet } from '@reservoir0x/relay-sdk'
 import { adaptSolanaWallet } from '@/utils/solanaAdapter'
-import { VersionedTransaction } from '@solana/web3.js'
+import { VersionedTransaction, PublicKey, Transaction } from '@solana/web3.js'
 import axios from 'axios'
-import TransactionTracker from './TransactionTracker'
 
 // Define token type
 interface Token {
@@ -31,7 +30,7 @@ declare global {
 }
 
 // Constants
-const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF'
+const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF' // Only used for Solana wallets in Paycrest orders
 const DEFAULT_RATE = 1600
 const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
 const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
@@ -45,16 +44,18 @@ const isSolanaAddress = (address: string): boolean => {
          /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
 
-// Helper function to ensure valid return address
-const getValidReturnAddress = (address: string): string => {
+// Helper function to ensure valid return address for Paycrest orders
+const getValidReturnAddress = (address: string, isPaycrestOrder: boolean = false): string => {
   if (isSolanaAddress(address)) {
-    console.log('Solana address detected, replacing with default destination:', address);
-    return DEFAULT_DESTINATION_ADDRESS;
+    if (isPaycrestOrder) {
+      console.log('Solana address detected in Paycrest order, replacing with default destination:', address);
+      return DEFAULT_DESTINATION_ADDRESS;
+    }
   }
   return address;
 }
 
-// Network request interceptors for Paycrest API
+// Update the network request interceptors
 if (typeof window !== 'undefined') {
   // Intercept fetch API
   const originalFetch = window.fetch;
@@ -70,10 +71,10 @@ if (typeof window !== 'undefined') {
             const body = JSON.parse(options.body);
             // Check if the body contains a returnAddress field
             if (body.returnAddress) {
-              if (isSolanaAddress(body.returnAddress)) {
-                const validAddress = getValidReturnAddress(body.returnAddress);
-                console.log(`API route: Replaced invalid return address: ${body.returnAddress} → ${validAddress}`);
-                body.returnAddress = validAddress;
+              const validReturnAddress = getValidReturnAddress(body.returnAddress, true);
+              if (body.returnAddress !== validReturnAddress) {
+                console.log(`API route: Replacing Solana return address in Paycrest order: ${body.returnAddress} → ${validReturnAddress}`);
+                body.returnAddress = validReturnAddress;
                 
                 // Create new options with fixed body
                 const newOptions = {
@@ -86,7 +87,6 @@ if (typeof window !== 'undefined') {
               }
             }
           } catch (e) {
-            // If parsing fails, proceed with the original request
             console.error('Error parsing fetch body:', e);
           }
         }
@@ -95,11 +95,10 @@ if (typeof window !== 'undefined') {
       console.error('Error in fetch interceptor:', error);
     }
     
-    // If no Solana address was detected or there was an error, proceed with the original request
     return originalFetch.apply(this, args);
   };
 
-  // Intercept XMLHttpRequest for other types of requests
+  // Intercept XMLHttpRequest
   const originalXHROpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(
     method: string, 
@@ -108,51 +107,47 @@ if (typeof window !== 'undefined') {
     username?: string | null, 
     password?: string | null
   ) {
-    // Store the URL for later use in send
     this._relayUrl = url?.toString();
-    
     return originalXHROpen.call(this, method, url, async, username || null, password || null);
   };
 
   const originalXHRSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function(body?: Document | XMLHttpRequestBodyInit | null) {
     try {
-      if (this._relayUrl && typeof this._relayUrl === 'string' && 
-          this._relayUrl.includes('paycrest.io') && 
-          body && typeof body === 'string') {
-        
-        try {
-          const data = JSON.parse(body);
-          if (data.returnAddress) {
-            if (isSolanaAddress(data.returnAddress)) {
-              const validAddress = getValidReturnAddress(data.returnAddress);
-              console.log(`API route: Replaced invalid return address: ${data.returnAddress} → ${validAddress}`);
-              data.returnAddress = validAddress;
-              
-              // Return modified body
-              return originalXHRSend.call(this, JSON.stringify(data));
+      if (this._relayUrl && typeof this._relayUrl === 'string') {
+        if (this._relayUrl.includes('paycrest.io') && body && typeof body === 'string') {
+          try {
+            const data = JSON.parse(body);
+            if (data.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(data.returnAddress, true);
+              if (data.returnAddress !== validReturnAddress) {
+                console.log(`API route: Replacing Solana return address in Paycrest order: ${data.returnAddress} → ${validReturnAddress}`);
+                data.returnAddress = validReturnAddress;
+                return originalXHRSend.call(this, JSON.stringify(data));
+              }
             }
+          } catch (e) {
+            console.error('Error parsing XHR body:', e);
           }
-        } catch (e) {
-          console.error('Error parsing XHR body:', e);
         }
       }
     } catch (error) {
       console.error('Error in XHR send interceptor:', error);
     }
     
-    // If no intervention needed, proceed with original send
     return originalXHRSend.call(this, body);
   };
 
-  // Intercept Axios if it's being used
+  // Intercept Axios
   axios.interceptors.request.use(config => {
     try {
       if (config.url && config.url.includes('paycrest.io') && config.data) {
-        if (config.data.returnAddress && isSolanaAddress(config.data.returnAddress)) {
-          const validAddress = getValidReturnAddress(config.data.returnAddress);
-          console.log(`API route: Replaced invalid return address: ${config.data.returnAddress} → ${validAddress}`);
-          config.data.returnAddress = validAddress;
+        if (config.data.returnAddress) {
+          const validReturnAddress = getValidReturnAddress(config.data.returnAddress, true);
+          if (config.data.returnAddress !== validReturnAddress) {
+            console.log(`API route: Replacing Solana return address in Paycrest order: ${config.data.returnAddress} → ${validReturnAddress}`);
+            config.data.returnAddress = validReturnAddress;
+          }
         }
       }
     } catch (error) {
@@ -160,6 +155,16 @@ if (typeof window !== 'undefined') {
     }
     return config;
   });
+}
+
+// Define interface for Privy wallet account with correct types
+interface PrivyWalletAccount {
+  type: string;
+  walletClientType?: string;
+  address: string;
+  chainId?: number;
+  connector?: any;
+  walletClient?: any;
 }
 
 // Update the component to accept props
@@ -171,10 +176,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const { login, authenticated, user, ready, linkWallet, logout } = usePrivy()
   const { data: walletClient } = useWalletClient()
   const containerRef = useRef<HTMLDivElement>(null)
-  
-  // Add slippage tolerance state
-  const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
-  const [showSlippageConfig, setShowSlippageConfig] = useState(false)
   
   // Simplified state
   const [nairaAmount, setNairaAmount] = useState("0.00")
@@ -194,15 +195,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
-  
-  // Transaction tracking state
-  const [showTransactionTracker, setShowTransactionTracker] = useState(false)
-  const [currentTransaction, setCurrentTransaction] = useState<{
-    orderId: string | null;
-    amount: number;
-    nairaAmount: string;
-    bankDetails: any;
-  } | null>(null)
+  const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
+  const [showSlippageConfig, setShowSlippageConfig] = useState(false)
   
   // Watch for changes in the receive address
   useEffect(() => {
@@ -234,7 +228,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [])
   
-  // Get wallet information from Privy
+  // Update wallet connection handling
   useEffect(() => {
     const setupWallet = async () => {
       if (!ready || !user) return;
@@ -252,30 +246,40 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         // Check for Solana wallet in user's linked wallets from Privy
         console.log("Checking for Solana wallet in Privy user object:", user);
         
-        // Access the wallets from the user object (Privy API may vary)
-        // @ts-ignore - The Privy User type might not include wallets property in all versions
-        if (user.wallets && user.wallets.length > 0) {
-          // Look for a Solana wallet
-          // @ts-ignore
-          const solanaWallet = user.wallets.find((wallet: any) => {
-            // Different Privy versions might structure this differently
-            // Look for any property indicating a Solana wallet
-            const walletStr = JSON.stringify(wallet).toLowerCase();
-            return walletStr.includes('solana') || 
-                   walletStr.includes('phantom') || 
-                   walletStr.includes('svm');
+        // Access the wallets from the user object and cast to known type
+        const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
+        const solanaWallet = linkedAccounts.find(account => {
+          return account.type === 'wallet' && 
+                 (account.walletClientType?.toLowerCase().includes('solana') ||
+                  account.walletClientType?.toLowerCase().includes('phantom'));
           });
           
           if (solanaWallet) {
-            console.log("Found potential Solana wallet:", solanaWallet);
-            
-            // Here you would use your adaptSolanaWallet utility
-            // For now, just log that we found it
+          console.log("Found Solana wallet:", solanaWallet);
             setWalletType('svm');
-            console.log("Solana wallet detected but not fully implemented");
-          }
+          
+          // Create a proper Solana wallet interface
+          const solanaInterface = {
+            publicKey: solanaWallet.address,
+            signTransaction: async (transaction: VersionedTransaction | Transaction) => {
+              // This will be handled by Privy's wallet interface
+              return transaction;
+            },
+            signAllTransactions: async (transactions: (VersionedTransaction | Transaction)[]) => {
+              // This will be handled by Privy's wallet interface
+              return transactions;
+            },
+            signMessage: async (message: Uint8Array) => {
+              // This will be handled by Privy's wallet interface
+              return message;
+            }
+          };
+          
+          // Now adapt the properly formatted wallet
+          const adapted = await adaptSolanaWallet(solanaInterface);
+          setAdaptedWallet(adapted);
+          console.log("Solana wallet adapted:", adapted);
         }
-        
       } catch (err) {
         console.error("Error setting up wallet:", err);
       }
@@ -673,71 +677,33 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [orderStatus])
 
-  // Setup event listeners
-  useEffect(() => {
-    // Setup event listener for quote events
-    const handleAnalyticEvent = (e: any) => {
-      if (!e || !e.eventName) return
-
-      console.log('[Widget Event]', e.eventName, e.data)
-
-      // Force update recipient in quote data
-      if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
-        console.log(`ENFORCING RECIPIENT IN QUOTE REQUEST:`, destinationAddress)
-        e.data.parameters.recipient = destinationAddress
-      }
-      
-      // Handle successful swap
-      if (e.eventName === 'SWAP_SUCCESS') {
-        console.log("SWAP_SUCCESS event detected, creating new address")
-        setSwapSuccessOccurred(true) // Mark that swap success has occurred
-        handleSwapSuccess()
-      }
-
-      // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, show transaction tracker
-      if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
-        console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, showing transaction tracker')
-        // Reset the flag
-        setSwapSuccessOccurred(false)
-        
-        // Show transaction tracker if we have transaction details
-        if (currentTransaction) {
-          setShowTransactionTracker(true)
-        }
-      }
-      
-      // Handle wallet selector events
-      if (e.eventName === 'WALLET_SELECTOR_SELECT') {
-        console.log("Wallet selector triggered:", e.data)
-        if (e.data && e.data.context === 'not_connected') {
-          console.log("Initiating wallet connection flow")
-          
-          // Set wallet type directly if it's a Solana wallet
-          if (e.data.wallet_type && 
-              (e.data.wallet_type.toLowerCase().includes('solana') ||
-               e.data.wallet_type.toLowerCase().includes('phantom') ||
-               e.data.wallet_type.toLowerCase().includes('svm'))) {
-            console.log("Setting wallet type to Solana")
-            setWalletType('svm')
-          }
-          
-          handleWalletConnection(e.data.wallet_type)
-        }
-      }
-      
-      // Dispatch custom event for external listeners
-      const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
-      window.dispatchEvent(customEvent)
-    };
+  // Define the functions
+  async function handleSwapSuccess() {
+    console.log('Swap successful, creating new order...')
     
-    window.addEventListener('relay-analytic', handleAnalyticEvent);
+    // Get bank details from localStorage
+    const storedBank = localStorage.getItem('linkedBankAccount')
+    if (!storedBank) {
+      console.warn('No bank details found, cannot create order after swap')
+      return
+    }
     
-    return () => {
-      window.removeEventListener('relay-analytic', handleAnalyticEvent);
-    };
-  }, [paycrestRate]);
+    try {
+      // Force create new order after successful swap
+      const newAddress = await createNewOrder(true)
+      console.log('New receive address after successful swap:', newAddress)
+      
+      // If we have a parent success callback, also call it
+      if (onSwapSuccess) {
+        console.log('Calling parent swap success handler with bank details')
+        await onSwapSuccess(JSON.parse(storedBank))
+      }
+    } catch (error) {
+      console.error('Failed to create new order after swap:', error)
+    }
+  }
 
-  const handleWalletConnection = async (connectorType?: string) => {
+  async function handleWalletConnection(connectorType?: string) {
     console.log("Wallet connection requested, type:", connectorType);
     
     if (!authenticated) {
@@ -745,11 +711,9 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       await login();
     } else if (connectorType) {
       console.log("Connecting specific wallet type:", connectorType);
-      // Handle specific connector types if needed
       if (connectorType.toLowerCase().includes('solana') || 
           connectorType.toLowerCase().includes('phantom')) {
         console.log("Connecting Solana wallet");
-        // Set wallet type to Solana Virtual Machine
         setWalletType('svm');
       }
       await linkWallet();
@@ -757,7 +721,86 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       console.log("Connecting additional wallet");
       await linkWallet();
     }
-  };
+  }
+
+  function handleAnalyticEvent(e: any) {
+    if (!e || !e.eventName) return
+
+    console.log('[Widget Event]', e.eventName, e.data)
+
+    // Force update recipient in quote data with actual receive address
+    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
+      const storedReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
+      if (storedReceiveAddress) {
+        console.log(`Setting recipient in quote request to Paycrest receive address:`, storedReceiveAddress);
+        e.data.parameters.recipient = storedReceiveAddress;
+      } else {
+        console.warn('No Paycrest receive address found for quote request');
+      }
+    }
+    
+    // Handle successful swap
+    if (e.eventName === 'SWAP_SUCCESS') {
+      console.log("SWAP_SUCCESS event detected, creating new address")
+      setSwapSuccessOccurred(true)
+      handleSwapSuccess()
+    }
+
+    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+    if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
+      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+      setSwapSuccessOccurred(false)
+      
+      setTimeout(() => {
+        if (authenticated && logout) {
+          // Clear local storage
+          localStorage.removeItem('paycrestReceiveAddress')
+          localStorage.removeItem('paycrestOrderId')
+          localStorage.removeItem('paycrestReference')
+          localStorage.removeItem('paycrestValidUntil')
+          localStorage.removeItem('lastOrderTimestamp')
+          
+          // Log the user out
+          logout()
+            .then(() => {
+              console.log('User logged out successfully after swap')
+              window.location.reload()
+            })
+            .catch(err => {
+              console.error('Failed to log out user:', err)
+            })
+        }
+      }, 1000)
+    }
+    
+    // Handle wallet selector events
+    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
+      console.log("Wallet selector triggered:", e.data)
+      if (e.data && e.data.context === 'not_connected') {
+        console.log("Initiating wallet connection flow")
+        
+        if (e.data.wallet_type && 
+            (e.data.wallet_type.toLowerCase().includes('solana') ||
+             e.data.wallet_type.toLowerCase().includes('phantom') ||
+             e.data.wallet_type.toLowerCase().includes('svm'))) {
+          console.log("Setting wallet type to Solana")
+          setWalletType('svm')
+        }
+        
+        handleWalletConnection(e.data.wallet_type)
+      }
+    }
+    
+    // Dispatch custom event for external listeners
+    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
+    window.dispatchEvent(customEvent)
+  }
+
+  // Setup event listeners
+  useEffect(() => {
+    window.addEventListener('relay-analytic', handleAnalyticEvent)
+    return () => window.removeEventListener('relay-analytic', handleAnalyticEvent)
+  }, [])
 
   // Hide the output field - run this only once after mounting
   useLayoutEffect(() => {
@@ -908,16 +951,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         }
         
         const text = element.textContent || '';
-        // Match pattern like "1 TOKEN = X.YYYY NGN"
-        const match = text.match(/1\s+(\w+)\s*=\s*([\d.]+)\s*NGN/);
+        // Match pattern like "1 TOKEN = X.YYYY"
+        const match = text.match(/1\s+(\w+)\s*=\s*([\d.]+)\s*/);
         if (match) {
           const [_, token, rate] = match;
           const numRate = parseFloat(rate);
           if (!isNaN(numRate)) {
             const newRate = numRate * paycrestRate;
             const formattedRate = newRate.toLocaleString('en-NG', {
-              minimumFractionDigits: 4,
-              maximumFractionDigits: 4
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
             });
             element.textContent = `1 ${token} = ${formattedRate}`;
             // Mark as processed to prevent infinite multiplication
@@ -1039,18 +1082,28 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // If we reach here, either forceCreate is true or we need a new order
       console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
       
+      // Step 1: Get account name and rate in parallel
+      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
+      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
+      
       try {
-        // Step 1: Get account name and rate in parallel using our proxy endpoints
         const [accountNameResponse, nairaRateResponse] = await Promise.all([
-          fetch('/api/paycrest/verify-account', {
+          fetch(verifyAccountEndpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            },
             body: JSON.stringify({
               institution: bankDetails.institution,
               accountIdentifier: bankDetails.accountIdentifier
             })
           }),
-          fetch('/api/paycrest/rates')
+          fetch(nairaRateEndpoint, {
+            headers: { 
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            }
+          })
         ])
         
         if (!accountNameResponse.ok || !nairaRateResponse.ok) {
@@ -1072,21 +1125,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         console.log('Account verification successful:', accountName)
         console.log('Current Naira rate:', rate)
         
-        // ALWAYS use the default destination address for returnAddress when wallet type is Solana
-        // This is the safest approach to ensure the API doesn't reject our requests
-        let walletAddress = DEFAULT_DESTINATION_ADDRESS
+        // Step 2: Create the order with the correct payload format
+        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
         
-        // Only use the connected address if it's definitely an Ethereum address
-        const connectedWalletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress')
-        if (connectedWalletAddress && 
-            typeof connectedWalletAddress === 'string' && 
-            connectedWalletAddress.startsWith('0x') &&
-            /^0x[a-fA-F0-9]{40}$/.test(connectedWalletAddress) &&
-            walletType !== 'svm') {
-          console.log('Using connected Ethereum wallet address:', connectedWalletAddress)
-          walletAddress = connectedWalletAddress
-        } else {
-          console.log('Not using wallet address, defaulting to:', DEFAULT_DESTINATION_ADDRESS)
+        // Get connected wallet address for return address
+        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress')
+        
+        // If wallet is Solana or no valid EVM address is available, use default address
+        if (walletType === 'svm' || !walletAddress || !walletAddress.startsWith('0x')) {
+          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)')
+          walletAddress = DEFAULT_DESTINATION_ADDRESS
         }
         
         // Generate a unique reference
@@ -1110,10 +1158,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         console.log('Sending order payload:', orderPayload)
         
-        // Use our proxy endpoint to create the order
-        const orderResponse = await fetch('/api/paycrest/orders', {
+        const orderResponse = await fetch(createOrderEndpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+          },
           body: JSON.stringify(orderPayload)
         })
         
@@ -1145,11 +1195,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           localStorage.setItem('paycrestReceiveAddress', receiveAddress)
           setDestinationAddress(receiveAddress)
           
-          // Save connected wallet address for future use - only if it's a valid ETH address
-          if (walletAddress && 
-              walletAddress !== DEFAULT_DESTINATION_ADDRESS && 
-              walletAddress.startsWith('0x') && 
-              /^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+          // Save connected wallet address for future use (only if it's an EVM address)
+          if (walletAddress && walletAddress.startsWith('0x')) {
             localStorage.setItem('connectedWalletAddress', walletAddress)
           }
           
@@ -1211,128 +1258,31 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     return () => clearInterval(interval)
   }, [lastOrderTime])
 
-  // Handle swap success event
-  const handleSwapSuccess = async () => {
-    console.log('Swap successful, creating new order...')
-    
-    // Get bank details from localStorage
-    const storedBank = localStorage.getItem('linkedBankAccount')
-    if (!storedBank) {
-      console.warn('No bank details found, cannot create order after swap')
-      return
-    }
-    
-    try {
-      // Force create new order after successful swap
-      // Using true parameter to force creation regardless of time since last order
-      const newAddress = await createNewOrder(true)
-      console.log('New receive address after successful swap:', newAddress)
-      
-      // Parse bank details
-      const bankDetails = JSON.parse(storedBank)
-      
-      // Set current transaction for tracking
-      setCurrentTransaction({
-        orderId: localStorage.getItem('paycrestOrderId'),
-        amount: outputValue,
-        nairaAmount: nairaAmount,
-        bankDetails: bankDetails
-      })
-      
-      // If we have a parent success callback, also call it
-      if (onSwapSuccess) {
-        console.log('Calling parent swap success handler with bank details')
-        await onSwapSuccess(bankDetails)
-      }
-    } catch (error) {
-      console.error('Failed to create new order after swap:', error)
-    }
-  }
+  // Add this effect to handle wallet balance display
+  useEffect(() => {
+    if (adaptedWallet && walletType) {
+      // Force a refresh of the wallet balance display
+      const refreshBalance = () => {
+        const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
+        balanceElements.forEach(element => {
+          if (element.textContent?.includes('Balance:')) {
+            // Trigger a re-render by updating the element
+            element.setAttribute('data-balance-updated', Date.now().toString());
+          }
+        });
+      };
 
-  // Update handleAnalyticEvent function to track SWAP_SUCCESS and SWAP_MODAL_CLOSED sequence
-  const handleAnalyticEvent = (e: any) => {
-    if (!e || !e.eventName) return
+      // Initial refresh
+      refreshBalance();
 
-    console.log('[Widget Event]', e.eventName, e.data)
-
-    // Force update recipient in quote data
-    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
-      console.log(`ENFORCING RECIPIENT IN QUOTE REQUEST:`, destinationAddress)
-      e.data.parameters.recipient = destinationAddress
+      // Set up periodic refresh
+      const interval = setInterval(refreshBalance, 2000);
+    return () => clearInterval(interval);
     }
-    
-    // Handle successful swap
-    if (e.eventName === 'SWAP_SUCCESS') {
-      console.log("SWAP_SUCCESS event detected, creating new address")
-      setSwapSuccessOccurred(true) // Mark that swap success has occurred
-      handleSwapSuccess()
-    }
-
-    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, show transaction tracker
-    if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
-      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, showing transaction tracker')
-      // Reset the flag
-      setSwapSuccessOccurred(false)
-      
-      // Show transaction tracker if we have transaction details
-      if (currentTransaction) {
-        setShowTransactionTracker(true)
-      }
-    }
-    
-    // Handle wallet selector events
-    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
-      console.log("Wallet selector triggered:", e.data)
-      if (e.data && e.data.context === 'not_connected') {
-        console.log("Initiating wallet connection flow")
-        
-        // Set wallet type directly if it's a Solana wallet
-        if (e.data.wallet_type && 
-            (e.data.wallet_type.toLowerCase().includes('solana') ||
-             e.data.wallet_type.toLowerCase().includes('phantom') ||
-             e.data.wallet_type.toLowerCase().includes('svm'))) {
-          console.log("Setting wallet type to Solana")
-          setWalletType('svm')
-        }
-        
-        handleWalletConnection(e.data.wallet_type)
-      }
-    }
-    
-    // Dispatch custom event for external listeners
-    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
-    window.dispatchEvent(customEvent)
-  }
-
-  // Add this function to toggle slippage config visibility
-  const toggleSlippageConfig = () => {
-    setShowSlippageConfig(!showSlippageConfig);
-  };
+  }, [adaptedWallet, walletType]);
 
   return (
     <div className="swap-page-center">
-      {showTransactionTracker && currentTransaction ? (
-        <TransactionTracker 
-          orderId={currentTransaction.orderId}
-          transactionAmount={currentTransaction.amount}
-          nairaAmount={currentTransaction.nairaAmount}
-          bankDetails={currentTransaction.bankDetails}
-          onGoBack={() => {
-            setShowTransactionTracker(false)
-            // Create new order for next transaction
-            createNewOrder(true).catch(err => {
-              console.error('Failed to create new order for next transaction:', err)
-            })
-          }}
-          onNewTransaction={() => {
-            setShowTransactionTracker(false)
-            // Create new order for next transaction
-            createNewOrder(true).catch(err => {
-              console.error('Failed to create new order for next transaction:', err)
-            })
-          }}
-        />
-      ) : (
       <div className="swap-card" ref={containerRef}>
         {error ? (
           <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
@@ -1341,35 +1291,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           </div>
         ) : (
           <>
-            {/* Slippage Configuration Button */}
-            <div className="slippage-button-container">
-              <button 
-                onClick={toggleSlippageConfig}
-                className="slippage-toggle-button"
-                title="Configure slippage tolerance"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="3"></circle>
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                </svg>
-                <span>Slippage</span>
-              </button>
-            </div>
-            
-            {/* Slippage Configuration Panel */}
-            {showSlippageConfig && (
-              <div className="slippage-config-panel">
-                <div className="slippage-config-header">
-                  <h4>Slippage Tolerance</h4>
-                  <button onClick={() => setShowSlippageConfig(false)}>✕</button>
-                </div>
-                <SlippageToleranceConfig
-                  setSlippageTolerance={setSlippageTolerance}
-                  onAnalyticEvent={handleAnalyticEvent}
-                />
-              </div>
-            )}
-
             <SwapWidget
               fromToken={fromToken}
               setFromToken={(token) => token && setFromTokenState(token)}
@@ -1388,33 +1309,54 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               onAnalyticEvent={handleAnalyticEvent}
               slippageTolerance={slippageTolerance}
             />
+            
+            {/* Move slippage config to bottom */}
+            <div className="slippage-config-container">
+              <button
+                onClick={() => setShowSlippageConfig(!showSlippageConfig)}
+                className="slippage-button"
+              >
+                Slippage: {slippageTolerance ? `${slippageTolerance}%` : 'Auto'}
+              </button>
               
-              {/* Responsive debug info */}
-            <div style={{ 
-              position: 'absolute', 
-                bottom: '8px', 
-                left: '12px', 
-                fontSize: '9px', 
-                color: 'rgba(255,255,255,0.3)',
-                userSelect: 'none',
-                maxWidth: '80%',
-                overflow: 'hidden',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis'
-              }}>
-                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
+              {showSlippageConfig && (
+                <div className="slippage-dropdown">
+                  <SlippageToleranceConfig
+                    setSlippageTolerance={setSlippageTolerance}
+                    onAnalyticEvent={(eventName, data) => {
+                      console.log('Slippage Config Event:', eventName, data);
+                    }}
+                  />
+                </div>
+              )}
             </div>
             
-              {/* Responsive overlay for Naira amount */}
+            {/* Responsive debug info */}
+            <div style={{ 
+              position: 'absolute', 
+              bottom: '8px', 
+              left: '12px', 
+              fontSize: '9px', 
+              color: 'rgba(255,255,255,0.3)',
+              userSelect: 'none',
+              maxWidth: '80%',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis'
+            }}>
+              {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
+            </div>
+            
+            {/* Responsive overlay for Naira amount */}
             <div
               ref={overlayRef}
-                className="responsive-overlay"
+              className="responsive-overlay"
               style={{
                 position: 'absolute',
-                  top: '210px',
-                  left: '130px',
+                top: '210px',
+                left: '140px',
                 transform: 'translateX(-50%)',
-                  backgroundColor: 'transparent',
+                backgroundColor: 'transparent',
                 color: 'black',
                 padding: '8px 16px',
                 borderRadius: '8px',
@@ -1423,86 +1365,44 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                 zIndex: 1000,
                 display: 'inline-flex',
                 alignItems: 'center',
-                  justifyContent: 'flex-start',
-                  width: '250px',
-                  height: '50px',
-                  overflow: 'hidden',
-                  whiteSpace: 'nowrap',
-                  maxWidth: 'calc(100% - 40px)'
-                }}
-              >
-                {isLoading || isRateLoading ? (
-                  <div style={{
-                    width: '120px',
-                    height: '24px',
-                    background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
-                    backgroundSize: '200% 100%',
-                    animation: 'pulse 1.5s infinite linear',
-                    borderRadius: '4px'
-                  }} />
-                ) : (
-                  <div className="flex items-center">
-                    <span style={{ 
-                      fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
-                      transition: 'font-size 0.1s ease',
-                      textAlign: 'left',
-                      display: 'inline-block',
-                      minWidth: '240px',
-                      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                      maxWidth: '100%',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis'
-                    }}>
-                      {nairaAmount}
-                    </span>
-                    {paycrestRate === DEFAULT_RATE && (
-                      <div 
-                        className="rate-warning" 
-                        title="Using default exchange rate. Click to refresh."
-                        onClick={() => {
-                          const fetchRate = async () => {
-                            try {
-                              setIsRateLoading(true);
-                              const rate = await getRatesForOfframp();
-                              if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
-                                console.log("Rate fetched successfully:", rate.NGN);
-                                setPaycrestRate(rate.NGN);
-                                rateRef.current = rate.NGN;
-                                setError(null);
-                              }
-                            } catch (err) {
-                              console.error('Error fetching rate:', err);
-                            } finally {
-                              setIsRateLoading(false);
-                            }
-                          };
-                          fetchRate();
-                        }}
-                        style={{
-                          display: 'inline-flex',
-                          marginLeft: '8px',
-                          cursor: 'pointer',
-                          backgroundColor: '#FEF3C7',
-                          color: '#D97706',
-                          borderRadius: '50%',
-                          width: '18px',
-                          height: '18px',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        !
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+                justifyContent: 'flex-start',
+                width: '250px',
+                height: '50px',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                maxWidth: 'calc(100% - 40px)'
+              }}
+            >
+              {isLoading || isRateLoading ? (
+                <div style={{
+                  width: '120px',
+                  height: '24px',
+                  background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
+                  backgroundSize: '200% 100%',
+                  animation: 'pulse 1.5s infinite linear',
+                  borderRadius: '4px'
+                }} />
+              ) : (
+                <>
+                  <span style={{ 
+                    fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
+                    transition: 'font-size 0.1s ease',
+                    textAlign: 'left',
+                    display: 'inline-block',
+                    minWidth: '240px',
+                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    maxWidth: '100%',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}>
+                    {nairaAmount}
+                  </span>
+                </>
+              )}
+            </div>
           </>
         )}
       </div>
-      )}
     </div>
   )
 }
@@ -1551,73 +1451,6 @@ if (typeof window !== 'undefined') {
       
       .relay-kit .relay-header, .relay-kit .relay-footer { 
         display: none !important; 
-      }
-      
-      /* Slippage configuration styling */
-      .slippage-button-container {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        z-index: 10;
-      }
-      
-      .slippage-toggle-button {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        background-color: rgba(255, 255, 255, 0.1);
-        color: rgba(255, 255, 255, 0.8);
-        border: none;
-        border-radius: 8px;
-        padding: 6px 10px;
-        font-size: 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-      }
-      
-      .slippage-toggle-button:hover {
-        background-color: rgba(255, 255, 255, 0.2);
-        color: white;
-      }
-      
-      .slippage-config-panel {
-        position: absolute;
-        top: 50px;
-        right: 10px;
-        width: 230px;
-        background-color: #2A2D39;
-        border-radius: 12px;
-        box-shadow: 0 5px 20px rgba(0,0,0,0.25);
-        padding: 12px;
-        z-index: 100;
-        border: 1px solid rgba(255,255,255,0.1);
-      }
-      
-      .slippage-config-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 10px;
-        color: white;
-      }
-      
-      .slippage-config-header h4 {
-        margin: 0;
-        font-size: 14px;
-        font-weight: 600;
-      }
-      
-      .slippage-config-header button {
-        background: none;
-        border: none;
-        color: rgba(255,255,255,0.6);
-        cursor: pointer;
-        padding: 0;
-        font-size: 16px;
-      }
-      
-      .slippage-config-header button:hover {
-        color: white;
       }
       
       /* Naira logo replacement */
@@ -1696,6 +1529,85 @@ if (typeof window !== 'undefined') {
       
       /* Small portrait phone styles */
       @media (max-height: 650px) and (max-width: 400px) {
+      }
+
+      /* Updated slippage config styles */
+      .slippage-config-container {
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.05);
+        z-index: 1;
+      }
+      
+      .slippage-button {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 12px;
+        padding: 8px 16px;
+        color: rgba(255,255,255,0.8);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      
+      .slippage-button:hover {
+        background: rgba(255,255,255,0.12);
+        border-color: rgba(255,255,255,0.15);
+      }
+      
+      .slippage-button:active {
+        transform: translateY(1px);
+      }
+      
+      .slippage-dropdown {
+        position: absolute;
+        top: auto;
+        bottom: calc(100% + 8px);
+        right: 0;
+        background: #2A2D36;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        min-width: 240px;
+      }
+
+      /* Ensure swap button is above slippage */
+      .relay-button {
+        position: relative;
+        z-index: 2;
+        margin-bottom: 0 !important;
+      }
+
+      /* Add spacing after the swap button */
+      .relay-kit > div:last-child {
+        margin-bottom: 0 !important;
+      }
+
+      /* Responsive adjustments */
+      @media (max-width: 480px) {
+        .slippage-config-container {
+          margin-top: 12px;
+          padding-top: 10px;
+        }
+        
+        .slippage-button {
+          padding: 6px 12px;
+          font-size: 12px;
+        }
+        
+        .slippage-dropdown {
+          min-width: 200px;
+          padding: 12px;
+        }
       }
     `;
     document.head.appendChild(style);

@@ -1,112 +1,75 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 
-const PAYCREST_API_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
-const DEFAULT_ETH_ADDRESS = '0xA110c77FA4b07ab601e63Ecd65E99Ddb8f1df6ec';
+const PUBLIC_KEY = '7f7d8575-be32-4598-b6a2-43801fe173dc';
+const PRIVATE_KEY = 'w7Nrej-opuRPXbuEmDoYRQ04msZCvE1yBnebcAx34ck=';
+const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF';
 
-// Enhanced helper function to detect Solana addresses
+// Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
-  if (!address || typeof address !== 'string') return false;
-  
-  // Solana addresses are base58 encoded strings, typically 32-44 characters
-  // They don't start with 0x like Ethereum addresses
-  const isSolana = !address.startsWith('0x') && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
-  
-  if (isSolana) {
-    console.log(`DETECTED SOLANA ADDRESS: ${address}`);
-  }
-  
-  return isSolana;
+  return typeof address === 'string' && 
+         !address.startsWith('0x') && 
+         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
 
-export async function POST(request: Request) {
+function generateHmacSignature(data: string, privateKey: string): string {
+  const hmac = crypto.createHmac('sha256', privateKey);
+  hmac.update(data);
+  return hmac.digest('hex');
+}
+
+export async function POST(req: NextRequest) {
   try {
-    // Track original request details for logging
-    let originalReturnAddress = '';
+    const body = await req.json();
     
-    // Parse the request body
-    const orderData = await request.json();
-    console.log('[paycrest-order] Received order creation request:', JSON.stringify(orderData, null, 2));
-    
-    // Save original return address for logging
-    originalReturnAddress = orderData.returnAddress || '';
-
-    // Check for Solana address and replace if found - STRICT ENFORCEMENT
-    if (orderData.returnAddress) {
-      if (isSolanaAddress(orderData.returnAddress)) {
-        console.log(`[paycrest-order] Replacing Solana address ${orderData.returnAddress} with ${DEFAULT_ETH_ADDRESS}`);
-        orderData.returnAddress = DEFAULT_ETH_ADDRESS;
-      } else if (!orderData.returnAddress.startsWith('0x')) {
-        // If it doesn't start with 0x, it's not a valid Ethereum address either
-        console.log(`[paycrest-order] Non-Ethereum address detected ${orderData.returnAddress}, replacing with default`);
-        orderData.returnAddress = DEFAULT_ETH_ADDRESS;
-      }
-    } else {
-      // If no return address provided, use the default
-      console.log('[paycrest-order] No return address provided, using default');
-      orderData.returnAddress = DEFAULT_ETH_ADDRESS;
+    // Validate and replace Solana address if present
+    if (body.returnAddress && isSolanaAddress(body.returnAddress)) {
+      console.log(`API route: Replacing Solana return address: ${body.returnAddress} → ${DEFAULT_DESTINATION_ADDRESS}`);
+      body.returnAddress = DEFAULT_DESTINATION_ADDRESS;
     }
     
-    // FORCE CHECK: Final validation before sending
-    const finalAddress = orderData.returnAddress;
-    if (!finalAddress || !finalAddress.startsWith('0x') || !(/^0x[a-fA-F0-9]{40}$/.test(finalAddress))) {
-      console.log(`[paycrest-order] FINAL CHECK - Invalid Ethereum address, forcing default: ${finalAddress}`);
-      orderData.returnAddress = DEFAULT_ETH_ADDRESS;
-    }
-
-    // Proxy the request to Paycrest API
-    console.log('[paycrest-order] Sending modified order payload to Paycrest:', JSON.stringify(orderData, null, 2));
+    // Add timestamp to the payload
+    const payloadWithTimestamp = {
+      ...body,
+      timestamp: Math.floor(Date.now() / 1000) // Unix timestamp in seconds
+    };
     
-    const response = await fetch(`https://api.paycrest.io/v1/sender/orders`, {
+    const stringifiedBody = JSON.stringify(payloadWithTimestamp);
+    
+    // Generate HMAC signature
+    const signature = generateHmacSignature(stringifiedBody, PRIVATE_KEY);
+    const authHeader = `HMAC ${PUBLIC_KEY}:${signature}`;
+
+    console.log('Sending validated payload to Paycrest:', payloadWithTimestamp);
+
+    const paycrestRes = await fetch('https://api.paycrest.io/v1/sender/orders/', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'API-Key': PAYCREST_API_KEY
+        'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc',
       },
-      body: JSON.stringify(orderData)
+      body: stringifiedBody,
     });
 
-    if (!response.ok) {
-      let errorDetails = '';
-      try {
-        const errorText = await response.text();
-        errorDetails = errorText;
-        console.error(`[paycrest-order] Paycrest API error [${response.status}]:`, errorText);
-      } catch (err) {
-        console.error('[paycrest-order] Could not read error response');
-      }
-      
-      // Log additional details about the request that failed
-      console.error('[paycrest-order] Failed request details:', {
-        originalAddress: originalReturnAddress,
-        sentAddress: orderData.returnAddress,
-        wasSolana: isSolanaAddress(originalReturnAddress),
-        statusCode: response.status
-      });
-      
+    if (!paycrestRes.ok) {
+      const errorData = await paycrestRes.json();
+      console.error('Paycrest API error:', errorData);
       return NextResponse.json(
         { 
           status: 'error', 
-          message: `Failed to create order: ${response.status}`,
-          details: errorDetails
-        },
-        { status: response.status }
+          message: errorData.message || 'Failed to create order',
+          data: errorData.data 
+        }, 
+        { status: paycrestRes.status }
       );
     }
 
-    const data = await response.json();
-    
-    // Log success
-    console.log('[paycrest-order] Paycrest order creation successful:', data.data?.id || 'Unknown ID');
-    if (originalReturnAddress !== orderData.returnAddress) {
-      console.log(`[paycrest-order] Address replacement result: ${originalReturnAddress} → ${orderData.returnAddress}`);
-    }
-    
-    return NextResponse.json(data);
+    const data = await paycrestRes.json();
+    return NextResponse.json(data, { status: paycrestRes.status });
   } catch (error) {
-    console.error('[paycrest-order] Error in order creation proxy:', error);
-    
+    console.error('Error in Paycrest order creation:', error);
     return NextResponse.json(
-      { status: 'error', message: 'Server error while creating order' },
+      { status: 'error', message: 'Internal server error', error: String(error) },
       { status: 500 }
     );
   }

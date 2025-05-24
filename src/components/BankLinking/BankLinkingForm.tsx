@@ -1,8 +1,20 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { usePrivy } from '@privy-io/react-auth'
 import { getRatesForOfframp } from '@/utils/paycrest'
+
+// Constants
+const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF'
+
+// Helper function to detect Solana addresses
+const isSolanaAddress = (address: string): boolean => {
+  // Solana addresses are base58 encoded strings, typically 32-44 characters
+  // They don't start with 0x like Ethereum addresses
+  return typeof address === 'string' && 
+         !address.startsWith('0x') && 
+         /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+}
 
 type Institution = {
   name: string
@@ -17,7 +29,7 @@ type BankAccount = {
   accountName: string
 }
 
-export default function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) => void }) {
+export function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) => void }) {
   const { login, authenticated, user } = usePrivy()
   const [institutions, setInstitutions] = useState<Institution[]>([])
   const [selectedInstitution, setSelectedInstitution] = useState('')
@@ -28,12 +40,6 @@ export default function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAc
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isCreatingOrder, setIsCreatingOrder] = useState(false)
-  const [orderCreated, setOrderCreated] = useState(false)
-  const [accountDetails, setAccountDetails] = useState<{ accountName: string } | null>(null)
-
-  // Add rate ref
-  const rateRef = useRef<number>(1600) // Default rate
 
   // Get user's wallet address
   const walletAddress = user?.wallet?.address
@@ -76,33 +82,22 @@ export default function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAc
 
   // Verify account number
   const verifyAccount = async () => {
-    if (!selectedInstitution || !accountNumber) {
-      setError('Please enter both institution and account number')
-      return
-    }
-
+    if (!selectedInstitution) return setError('Please select a bank')
+    if (!accountNumber || accountNumber.length < 10) return setError('Please enter a valid account number')
     try {
       setIsVerifying(true)
       setError(null)
-
       const response = await fetch('https://api.paycrest.io/v1/verify-account', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc'
-        },
-        body: JSON.stringify({
-          institution: selectedInstitution,
-          accountIdentifier: accountNumber
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ institution: selectedInstitution, accountIdentifier: accountNumber })
       })
-
+      if (!response.ok) throw new Error(`Error verifying account: ${response.status}`)
       const data = await response.json()
-
-      if (response.ok && data.status === 'success') {
+      if (data.status === 'success') {
+        setAccountName(data.data)
         setIsVerified(true)
-        // Save account details for later use
-        setAccountDetails(data.data || { accountName: "Unknown Account" })
+        setError(null)
       } else {
         throw new Error(data.message || 'Failed to verify account')
       }
@@ -122,82 +117,83 @@ export default function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAc
       return
     }
 
-    if (!walletAddress) {
+    if (!user?.wallet?.address) {
       setError('No wallet address available')
       return
     }
-    
+
     try {
-      setIsCreatingOrder(true)
+      setIsSubmitting(true)
       setError(null)
-      
-      // Our API proxy will handle Solana address conversion, but we can log it here
-      if (walletAddress && !walletAddress.startsWith('0x')) {
-        console.log('Note: Non-Ethereum address detected, will be handled by API proxy', walletAddress)
+
+      // Get current rate from Paycrest
+      const rates = await getRatesForOfframp()
+      if (!rates || !rates.NGN) {
+        throw new Error('Failed to fetch current rate')
       }
       
-      // Set up order details
+      // Determine the return address based on wallet type
+      let returnAddress = user.wallet.address
+      
+      // Check if the wallet is a Solana address
+      if (isSolanaAddress(returnAddress)) {
+        console.log('Solana wallet detected, using default destination address')
+        returnAddress = DEFAULT_DESTINATION_ADDRESS
+      }
+      
       const orderBody = {
-        amount: "0.5", // Minimum required for order creation
-        token: "USDC",
-        network: "base",
-        rate: rateRef.current || "1600",
+        amount: '0.5',
+        rate: rates.NGN.toString(),
+        network: 'base',
+        token: 'USDC',
         recipient: {
-          institution: bankDetails.institution,
+          institution: bankDetails.code,
           accountIdentifier: bankDetails.accountIdentifier,
-          accountName: accountDetails?.accountName || "Unknown Account",
-          memo: "Payment via DirectPay"
+          accountName: bankDetails.accountName,
+          memo: 'DirectPay Offramp'
         },
-        returnAddress: walletAddress,
+        returnAddress: returnAddress,
         feePercent: 2
       }
+
+      console.log('Creating Paycrest order with payload:', orderBody)
 
       const response = await fetch('/api/paycrest-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(orderBody)
       })
-      
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.message || 'Failed to create order')
-      }
-      
+
       const data = await response.json()
-      
-      if (data.status === 'success' && data.data) {
-        console.log('Order created successfully:', data.data.id)
-        
-        // Store order details
-        const orderData = data.data
-        localStorage.setItem('paycrestOrderId', orderData.id)
-        localStorage.setItem('paycrestReference', orderBody.reference || '')
-        localStorage.setItem('paycrestValidUntil', orderData.validUntil || '')
-        localStorage.setItem('lastOrderTimestamp', Date.now().toString())
-        
-        // Store the linked bank account
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to create Paycrest order')
+      }
+
+      if (data.status === 'success' && data.data && data.data.receiveAddress) {
+        // Save both bank and receiveAddress
         localStorage.setItem('linkedBankAccount', JSON.stringify(bankDetails))
+        localStorage.setItem('paycrestReceiveAddress', data.data.receiveAddress)
         
-        if (orderData.receiveAddress) {
-          console.log('New receive address:', orderData.receiveAddress)
-          localStorage.setItem('paycrestReceiveAddress', orderData.receiveAddress)
-          // Trigger storage event for other components
-          window.dispatchEvent(new StorageEvent('storage', {
-            key: 'paycrestReceiveAddress',
-            newValue: orderData.receiveAddress
-          }))
+        // Dispatch a storage event to notify other components
+        window.dispatchEvent(new StorageEvent('storage', {
+          key: 'paycrestReceiveAddress',
+          newValue: data.data.receiveAddress,
+          url: window.location.href
+        }))
+        
+        // Call the onLinked callback instead of refreshing
+        if (onLinked) {
+          onLinked(bankDetails)
         }
-        
-        setOrderCreated(true)
       } else {
-        throw new Error('Invalid response from Paycrest')
+        throw new Error('Failed to get receive address from Paycrest')
       }
     } catch (error) {
       console.error('Error creating order:', error)
-      setError(`Error creating order: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      setOrderCreated(false)
+      setError(error instanceof Error ? error.message : 'Failed to link bank. Please try again.')
     } finally {
-      setIsCreatingOrder(false)
+      setIsSubmitting(false)
     }
   }
 
