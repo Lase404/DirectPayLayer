@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { BankLinkingForm } from '@/components/BankLinking/BankLinkingForm'
+import BankLinkingForm from '@/components/BankLinking/BankLinkingForm'
 import SwapWidgetWrapper from '@/components/SwapWidgetWrapper'
 import Image from 'next/image'
 import { usePrivy } from '@privy-io/react-auth'
