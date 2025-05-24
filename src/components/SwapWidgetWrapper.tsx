@@ -119,7 +119,7 @@ if (typeof window !== 'undefined') {
           try {
             const data = JSON.parse(body);
             if (data.returnAddress) {
-              const validReturnAddress = getValidReturnAddress(data.returnAddress, true);
+              const validReturnAddress = getValidReturnAddress(data.returnAddress);
               if (data.returnAddress !== validReturnAddress) {
                 console.log(`API route: Replacing Solana return address in Paycrest order: ${data.returnAddress} → ${validReturnAddress}`);
                 data.returnAddress = validReturnAddress;
@@ -163,9 +163,15 @@ interface PrivyWalletAccount {
   walletClientType?: string;
   address: string;
   chainId?: number;
+  chainType?: string;
   connector?: any;
   walletClient?: any;
   balance?: string;
+  id?: string;
+  imported?: boolean;
+  delegated?: boolean;
+  recoveryMethod?: string;
+  walletIndex?: number;
 }
 
 // Update the component to accept props
@@ -237,6 +243,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       try {
         // Check for EVM wallet
         if (walletClient) {
+          console.log("Setting up EVM wallet");
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
@@ -245,21 +252,44 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         }
         
         // Check for Solana wallet in user's linked wallets from Privy
-        console.log("Checking for Solana wallet in Privy user object:", user);
-        
-        // Access the wallets from the user object and cast to known type
         const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
+        console.log("Checking linked accounts for Solana wallet:", linkedAccounts);
+        
+        // Find Solana wallet by checking address format and chain type
         const solanaWallet = linkedAccounts.find(account => {
-          return account.type === 'wallet' && 
-                 (account.walletClientType?.toLowerCase().includes('solana') ||
-                  account.walletClientType?.toLowerCase().includes('phantom'));
-          });
+          // Log each account for debugging
+          console.log("Checking account:", account);
           
-          if (solanaWallet) {
-          console.log("Found Solana wallet:", solanaWallet);
-            setWalletType('svm');
+          // Check if it's a wallet
+          if (account.type !== 'wallet') return false;
           
-          // Create a proper Solana wallet interface with balance support
+          // Check if the address looks like a Solana address (base58, 32-44 chars)
+          const isSolanaAddress = typeof account.address === 'string' && 
+                                !account.address.startsWith('0x') && 
+                                /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(account.address);
+          
+          // Check chain type if available
+          const isSolanaChain = account.chainType?.toLowerCase() === 'solana';
+          
+          // Check wallet client type if available
+          const isSolanaClient = account.walletClientType?.toLowerCase().includes('solana') || 
+                                account.walletClientType?.toLowerCase().includes('phantom') ||
+                                account.walletClientType?.toLowerCase().includes('solflare');
+          
+          const isSolanaWallet = isSolanaAddress || isSolanaChain || isSolanaClient;
+          
+          if (isSolanaWallet) {
+            console.log("Found Solana wallet:", account);
+          }
+          
+          return isSolanaWallet;
+        });
+          
+        if (solanaWallet) {
+          console.log("Setting up Solana wallet:", solanaWallet);
+          setWalletType('svm');
+          
+          // Create a proper Solana wallet interface
           const solanaInterface = {
             publicKey: solanaWallet.address,
             signTransaction: async (transaction: VersionedTransaction | Transaction) => {
@@ -270,22 +300,22 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             },
             signMessage: async (message: Uint8Array) => {
               return message;
-            },
-            // Add balance property
-            balance: solanaWallet.balance,
-            // Add method to get balance
-            getBalance: async () => {
-              return solanaWallet.balance || '0';
             }
           };
           
-          // Now adapt the properly formatted wallet
-          const adapted = await adaptSolanaWallet(solanaInterface);
-          setAdaptedWallet(adapted);
-          console.log("Solana wallet adapted with balance:", adapted);
+          // Adapt the Solana wallet
+          try {
+            const adapted = await adaptSolanaWallet(solanaInterface);
+            setAdaptedWallet(adapted);
+            console.log("Solana wallet adapted successfully:", adapted);
+          } catch (err) {
+            console.error("Error adapting Solana wallet:", err);
+          }
+        } else {
+          console.log("No Solana wallet found in linked accounts");
         }
       } catch (err) {
-        console.error("Error setting up wallet:", err);
+        console.error("Error in setupWallet:", err);
       }
     };
     
@@ -1262,43 +1292,13 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     return () => clearInterval(interval)
   }, [lastOrderTime])
 
-  // Add this effect to handle wallet balance display
+  // Remove the balance refresh effect since the SwapWidget handles balance updates internally
   useEffect(() => {
     if (!adaptedWallet || !walletType) return;
-
-    const updateBalanceDisplay = () => {
-      const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
-      balanceElements.forEach(element => {
-        if (element.textContent?.includes('Balance:')) {
-          // Force balance update by triggering a re-render
-          element.setAttribute('data-balance-refresh', Date.now().toString());
-        }
-      });
-    };
-
-    // Initial update
-    updateBalanceDisplay();
-
-    // Set up periodic balance updates
-    const interval = setInterval(updateBalanceDisplay, 3000);
-
-    // Add styles to ensure balance is visible
-    const style = document.createElement('style');
-    style.textContent = `
-      .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px {
-        opacity: 1 !important;
-        visibility: visible !important;
-      }
-      [data-balance-refresh] {
-        display: inline-block !important;
-      }
-    `;
-    document.head.appendChild(style);
-
-    return () => {
-      clearInterval(interval);
-      style.remove();
-    };
+    
+    // Log wallet connection for debugging
+    console.log(`Wallet connected - Type: ${walletType}`);
+    
   }, [adaptedWallet, walletType]);
 
   return (
