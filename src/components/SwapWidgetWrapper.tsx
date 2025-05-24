@@ -36,12 +36,6 @@ const DEFAULT_RATE = 1600
 const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
 const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
 
-// Add this global variable at the top of the file, outside the component
-// This will ensure WalletConnect is only initialized once across rerenders
-if (typeof window !== 'undefined') {
-  window.walletConnectInitialized = window.walletConnectInitialized || false;
-}
-
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
   // Solana addresses are base58 encoded strings, typically 32-44 characters
@@ -180,6 +174,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   
   // Add slippage tolerance state
   const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
+  const [showSlippageConfig, setShowSlippageConfig] = useState(false)
   
   // Simplified state
   const [nairaAmount, setNairaAmount] = useState("0.00")
@@ -199,9 +194,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
-  
-  // Add state for default amount to trigger balance display
-  const [defaultAmount, setDefaultAmount] = useState<string | undefined>(undefined)
   
   // Transaction tracking state
   const [showTransactionTracker, setShowTransactionTracker] = useState(false)
@@ -248,35 +240,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (!ready || !user) return;
       
       try {
-        // Prevent WalletConnect from being initialized again if it's already done
-        if (typeof window !== 'undefined' && window.walletConnectInitialized) {
-          console.log("Skipping wallet setup - WalletConnect already initialized");
-          return;
-        }
-        
         // Check for EVM wallet
         if (walletClient) {
           const adapted = adaptViemWallet(walletClient);
           setAdaptedWallet(adapted);
           setWalletType('evm');
           console.log("EVM wallet adapted:", adapted);
-          
-          // Set flag to prevent future initializations
-          if (typeof window !== 'undefined') {
-            window.walletConnectInitialized = true;
-          }
-          
-          // Set a very small default amount to trigger balance display
-          // setTimeout prevents race conditions with the wallet adaptation
-          setTimeout(() => {
-            setDefaultAmount('0.000001');
-            
-            // Clear it after a delay to let the user input their own amount
-            setTimeout(() => {
-              setDefaultAmount(undefined);
-            }, 800);
-          }, 500);
-          
           return;
         }
         
@@ -314,27 +283,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     
     setupWallet();
   }, [ready, user, walletClient]);
-  
-  // Add a dedicated effect to monitor wallet connection status and refresh the UI
-  useEffect(() => {
-    const checkWalletStatus = async () => {
-      if (adaptedWallet) {
-        console.log("Wallet connected, refreshing UI elements");
-        
-        // Force a UI update to show balance controls
-        setDefaultAmount('0.000001');
-        
-        // Clear after a short delay
-        const timer = setTimeout(() => {
-          setDefaultAmount(undefined);
-        }, 800);
-        
-        return () => clearTimeout(timer);
-      }
-    };
-    
-    checkWalletStatus();
-  }, [adaptedWallet, connectedAddress]);
   
   // Define tokens outside of render cycle
   const [fromToken, setFromTokenState] = useState<Token | undefined>(undefined);
@@ -789,55 +737,25 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     };
   }, [paycrestRate]);
 
-  // Enhanced wallet connection handler with better error handling and initialization check
   const handleWalletConnection = async (connectorType?: string) => {
     console.log("Wallet connection requested, type:", connectorType);
     
-    try {
-      // Check if WalletConnect is already initialized and we have an adapted wallet
-      if (typeof window !== 'undefined' && 
-          window.walletConnectInitialized && 
-          adaptedWallet) {
-        console.log("WalletConnect already initialized and wallet connected");
-        // Just refresh UI since wallet is already connected
-        setTimeout(() => {
-          setDefaultAmount('0.000001');
-          setTimeout(() => {
-            setDefaultAmount(undefined);
-          }, 800);
-        }, 300);
-        return;
+    if (!authenticated) {
+      console.log("User not authenticated, initiating login");
+      await login();
+    } else if (connectorType) {
+      console.log("Connecting specific wallet type:", connectorType);
+      // Handle specific connector types if needed
+      if (connectorType.toLowerCase().includes('solana') || 
+          connectorType.toLowerCase().includes('phantom')) {
+        console.log("Connecting Solana wallet");
+        // Set wallet type to Solana Virtual Machine
+        setWalletType('svm');
       }
-      
-      if (!authenticated) {
-        console.log("User not authenticated, initiating login");
-        await login();
-      } else if (connectorType) {
-        console.log("Connecting specific wallet type:", connectorType);
-        // Handle specific connector types if needed
-        if (connectorType.toLowerCase().includes('solana') || 
-            connectorType.toLowerCase().includes('phantom')) {
-          console.log("Connecting Solana wallet");
-          // Set wallet type to Solana Virtual Machine
-          setWalletType('svm');
-        }
-        await linkWallet();
-      } else {
-        console.log("Connecting additional wallet");
-        await linkWallet();
-      }
-      
-      // Trigger UI refresh to show balance after connection
-      setTimeout(() => {
-        setDefaultAmount('0.000001');
-        setTimeout(() => {
-          setDefaultAmount(undefined);
-        }, 1000);
-      }, 1500);
-      
-    } catch (err: any) {
-      console.error("Error connecting wallet:", err);
-      setError(`Failed to connect wallet: ${err.message || 'Unknown error'}`);
+      await linkWallet();
+    } else {
+      console.log("Connecting additional wallet");
+      await linkWallet();
     }
   };
 
@@ -1386,41 +1304,10 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     window.dispatchEvent(customEvent)
   }
 
-  // Set a default amount after wallet connection to trigger balance display
-  useEffect(() => {
-    if (adaptedWallet) {
-      // Set a very small default amount to trigger the balance display
-      // This will be almost invisible to the user but will activate the UI elements
-      setDefaultAmount('0.000001')
-      
-      // Clear it after a short delay to let the user input their own amount
-      const timer = setTimeout(() => {
-        setDefaultAmount(undefined)
-      }, 800)
-      
-      return () => clearTimeout(timer)
-    }
-  }, [adaptedWallet])
-
-  useEffect(() => {
-    // Setup component and initialize WalletConnect
-    console.log("SwapWidgetWrapper mounted");
-    
-    // Cleanup function to run when component unmounts
-    return () => {
-      console.log("SwapWidgetWrapper unmounting, cleaning up");
-      
-      // Reset the initialization flag when component unmounts
-      // This allows for proper re-initialization if the component gets mounted again
-      if (typeof window !== 'undefined') {
-        console.log("Resetting WalletConnect initialization flag");
-        // To avoid breaking existing connections, we only reset in development
-        if (process.env.NODE_ENV === 'development') {
-          window.walletConnectInitialized = false;
-        }
-      }
-    };
-  }, []);
+  // Add this function to toggle slippage config visibility
+  const toggleSlippageConfig = () => {
+    setShowSlippageConfig(!showSlippageConfig);
+  };
 
   return (
     <div className="swap-page-center">
@@ -1454,63 +1341,80 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           </div>
         ) : (
           <>
-            {/* Add SlippageToleranceConfig before SwapWidget */}
-            <div className="swap-widget-container relative">
-              {/* Position slippage button at the right side */}
-              <div className="slippage-config-container absolute right-0 top-2 z-10">
+            {/* Slippage Configuration Button */}
+            <div className="slippage-button-container">
+              <button 
+                onClick={toggleSlippageConfig}
+                className="slippage-toggle-button"
+                title="Configure slippage tolerance"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+                <span>Slippage</span>
+              </button>
+            </div>
+            
+            {/* Slippage Configuration Panel */}
+            {showSlippageConfig && (
+              <div className="slippage-config-panel">
+                <div className="slippage-config-header">
+                  <h4>Slippage Tolerance</h4>
+                  <button onClick={() => setShowSlippageConfig(false)}>✕</button>
+                </div>
                 <SlippageToleranceConfig
                   setSlippageTolerance={setSlippageTolerance}
                   onAnalyticEvent={handleAnalyticEvent}
                 />
               </div>
+            )}
 
-              <SwapWidget
-                fromToken={fromToken}
-                setFromToken={(token) => token && setFromTokenState(token)}
-                toToken={toToken}
-                setToToken={(token) => token && setToTokenState(token)}
-                lockFromToken={false}
-                lockToToken={true}
-                supportedWalletVMs={['evm', 'svm']}
-                onConnectWallet={handleWalletConnection}
-                defaultToAddress={destinationAddress as `0x${string}`}
-                multiWalletSupportEnabled={true}
-                onSetPrimaryWallet={() => {}}
-                onLinkNewWallet={() => {}}
-                linkedWallets={[]}
-                wallet={adaptedWallet}
-                onAnalyticEvent={handleAnalyticEvent}
-                slippageTolerance={slippageTolerance}
-                defaultAmount={defaultAmount}
-              />
-            </div>
+            <SwapWidget
+              fromToken={fromToken}
+              setFromToken={(token) => token && setFromTokenState(token)}
+              toToken={toToken}
+              setToToken={(token) => token && setToTokenState(token)}
+              lockFromToken={false}
+              lockToToken={true}
+              supportedWalletVMs={['evm', 'svm']}
+              onConnectWallet={handleWalletConnection}
+              defaultToAddress={destinationAddress as `0x${string}`}
+              multiWalletSupportEnabled={true}
+              onSetPrimaryWallet={() => {}}
+              onLinkNewWallet={() => {}}
+              linkedWallets={[]}
+              wallet={adaptedWallet}
+              onAnalyticEvent={handleAnalyticEvent}
+              slippageTolerance={slippageTolerance}
+            />
               
-            {/* Responsive debug info */}
+              {/* Responsive debug info */}
             <div style={{ 
               position: 'absolute', 
-              bottom: '8px', 
-              left: '12px', 
-              fontSize: '9px', 
-              color: 'rgba(255,255,255,0.3)',
-              userSelect: 'none',
-              maxWidth: '80%',
-              overflow: 'hidden',
-              whiteSpace: 'nowrap',
-              textOverflow: 'ellipsis'
-            }}>
-              {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus} | {slippageTolerance ? `${parseInt(slippageTolerance)/100}%` : 'Auto'}
+                bottom: '8px', 
+                left: '12px', 
+                fontSize: '9px', 
+                color: 'rgba(255,255,255,0.3)',
+                userSelect: 'none',
+                maxWidth: '80%',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis'
+              }}>
+                {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderStatus}
             </div>
             
-            {/* Responsive overlay for Naira amount */}
+              {/* Responsive overlay for Naira amount */}
             <div
               ref={overlayRef}
-              className="responsive-overlay"
+                className="responsive-overlay"
               style={{
                 position: 'absolute',
-                top: '210px',
-                left: '130px',
+                  top: '210px',
+                  left: '130px',
                 transform: 'translateX(-50%)',
-                backgroundColor: 'transparent',
+                  backgroundColor: 'transparent',
                 color: 'black',
                 padding: '8px 16px',
                 borderRadius: '8px',
@@ -1519,82 +1423,82 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                 zIndex: 1000,
                 display: 'inline-flex',
                 alignItems: 'center',
-                justifyContent: 'flex-start',
-                width: '250px',
-                height: '50px',
-                overflow: 'hidden',
-                whiteSpace: 'nowrap',
-                maxWidth: 'calc(100% - 40px)'
-              }}
-            >
-              {isLoading || isRateLoading ? (
-                <div style={{
-                  width: '120px',
-                  height: '24px',
-                  background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
-                  backgroundSize: '200% 100%',
-                  animation: 'pulse 1.5s infinite linear',
-                  borderRadius: '4px'
-                }} />
-              ) : (
-                <div className="flex items-center">
-                  <span style={{ 
-                    fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
-                    transition: 'font-size 0.1s ease',
-                    textAlign: 'left',
-                    display: 'inline-block',
-                    minWidth: '240px',
-                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                    maxWidth: '100%',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis'
-                  }}>
-                    {nairaAmount}
-                  </span>
-                  {paycrestRate === DEFAULT_RATE && (
-                    <div 
-                      className="rate-warning" 
-                      title="Using default exchange rate. Click to refresh."
-                      onClick={() => {
-                        const fetchRate = async () => {
-                          try {
-                            setIsRateLoading(true);
-                            const rate = await getRatesForOfframp();
-                            if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
-                              console.log("Rate fetched successfully:", rate.NGN);
-                              setPaycrestRate(rate.NGN);
-                              rateRef.current = rate.NGN;
-                              setError(null);
+                  justifyContent: 'flex-start',
+                  width: '250px',
+                  height: '50px',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  maxWidth: 'calc(100% - 40px)'
+                }}
+              >
+                {isLoading || isRateLoading ? (
+                  <div style={{
+                    width: '120px',
+                    height: '24px',
+                    background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'pulse 1.5s infinite linear',
+                    borderRadius: '4px'
+                  }} />
+                ) : (
+                  <div className="flex items-center">
+                    <span style={{ 
+                      fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
+                      transition: 'font-size 0.1s ease',
+                      textAlign: 'left',
+                      display: 'inline-block',
+                      minWidth: '240px',
+                      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {nairaAmount}
+                    </span>
+                    {paycrestRate === DEFAULT_RATE && (
+                      <div 
+                        className="rate-warning" 
+                        title="Using default exchange rate. Click to refresh."
+                        onClick={() => {
+                          const fetchRate = async () => {
+                            try {
+                              setIsRateLoading(true);
+                              const rate = await getRatesForOfframp();
+                              if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
+                                console.log("Rate fetched successfully:", rate.NGN);
+                                setPaycrestRate(rate.NGN);
+                                rateRef.current = rate.NGN;
+                                setError(null);
+                              }
+                            } catch (err) {
+                              console.error('Error fetching rate:', err);
+                            } finally {
+                              setIsRateLoading(false);
                             }
-                          } catch (err) {
-                            console.error('Error fetching rate:', err);
-                          } finally {
-                            setIsRateLoading(false);
-                          }
-                        };
-                        fetchRate();
-                      }}
-                      style={{
-                        display: 'inline-flex',
-                        marginLeft: '8px',
-                        cursor: 'pointer',
-                        backgroundColor: '#FEF3C7',
-                        color: '#D97706',
-                        borderRadius: '50%',
-                        width: '18px',
-                        height: '18px',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        fontSize: '12px',
-                        fontWeight: 'bold'
-                      }}
-                    >
-                      !
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+                          };
+                          fetchRate();
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          marginLeft: '8px',
+                          cursor: 'pointer',
+                          backgroundColor: '#FEF3C7',
+                          color: '#D97706',
+                          borderRadius: '50%',
+                          width: '18px',
+                          height: '18px',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          fontSize: '12px',
+                          fontWeight: 'bold'
+                        }}
+                      >
+                        !
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
           </>
         )}
       </div>
@@ -1637,16 +1541,6 @@ if (typeof window !== 'undefined') {
         border: 1px solid rgba(255,255,255,0.05);
       }
       
-      /* Slippage config styles */
-      .slippage-config-container {
-        margin-bottom: 15px;
-      }
-      
-      /* Adjust overlay position to account for slippage UI */
-      .responsive-overlay {
-        top: 230px !important;
-      }
-      
       @keyframes pulse { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }
       
       .relay-kit { 
@@ -1657,6 +1551,73 @@ if (typeof window !== 'undefined') {
       
       .relay-kit .relay-header, .relay-kit .relay-footer { 
         display: none !important; 
+      }
+      
+      /* Slippage configuration styling */
+      .slippage-button-container {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 10;
+      }
+      
+      .slippage-toggle-button {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        background-color: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.8);
+        border: none;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      
+      .slippage-toggle-button:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+        color: white;
+      }
+      
+      .slippage-config-panel {
+        position: absolute;
+        top: 50px;
+        right: 10px;
+        width: 230px;
+        background-color: #2A2D39;
+        border-radius: 12px;
+        box-shadow: 0 5px 20px rgba(0,0,0,0.25);
+        padding: 12px;
+        z-index: 100;
+        border: 1px solid rgba(255,255,255,0.1);
+      }
+      
+      .slippage-config-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        color: white;
+      }
+      
+      .slippage-config-header h4 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      
+      .slippage-config-header button {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.6);
+        cursor: pointer;
+        padding: 0;
+        font-size: 16px;
+      }
+      
+      .slippage-config-header button:hover {
+        color: white;
       }
       
       /* Naira logo replacement */
