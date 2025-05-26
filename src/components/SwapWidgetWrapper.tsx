@@ -162,16 +162,19 @@ interface PrivyWalletAccount {
   type: string;
   walletClientType?: string;
   address: string;
-  chainId?: number;
+  chainId?: string | number;
   chainType?: string;
   connector?: any;
   walletClient?: any;
-  balance?: string;
+}
+
+// Define interface for Privy wallet
+interface PrivyWallet {
   id?: string;
-  imported?: boolean;
-  delegated?: boolean;
-  recoveryMethod?: string;
-  walletIndex?: number;
+  address: string;
+  chainType?: string;
+  walletClientType?: string;
+  connectorType?: string;
 }
 
 // Update the component to accept props
@@ -184,6 +187,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const { data: walletClient } = useWalletClient()
   const containerRef = useRef<HTMLDivElement>(null)
   
+  // Error handling function
+  const handleError = useCallback((err: unknown) => {
+    console.error('An error occurred:', err);
+    if (err instanceof Error) {
+      setError(err.message);
+    } else {
+      setError('An unknown error occurred');
+    }
+  }, []);
+
   // Simplified state
   const [nairaAmount, setNairaAmount] = useState("0.00")
   const [paycrestRate, setPaycrestRate] = useState(DEFAULT_RATE)
@@ -191,7 +204,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [error, setError] = useState<string | null>(null)
   const [outputValue, setOutputValue] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
-  const overlayRef = useRef(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
   const isInitialized = useRef(false)
   const [adaptedWallet, setAdaptedWallet] = useState<any>(undefined)
   const [walletType, setWalletType] = useState<'evm' | 'svm' | null>(null)
@@ -205,6 +218,186 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
   const [showSlippageConfig, setShowSlippageConfig] = useState(false)
   
+  // Enhanced order management function
+  const createNewOrder = useCallback(async (forceCreate = false) => {
+    try {
+      // Get bank details from localStorage
+      const storedBank = localStorage.getItem('linkedBankAccount')
+      if (!storedBank) {
+        console.warn('No bank details found, cannot create order')
+        return null
+      }
+      
+      const bankDetails = JSON.parse(storedBank)
+      
+      // Get current time and check if we need a new order
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      
+      // Only check for existing order if not forced to create a new one
+      if (!forceCreate) {
+        // If it hasn't been 30 minutes since the last order was created
+        if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
+          // Check if we already have a valid order
+          const storedAddress = localStorage.getItem('paycrestReceiveAddress')
+          const storedOrderId = localStorage.getItem('paycrestOrderId')
+          
+          if (storedAddress && storedOrderId) {
+            console.log('Using existing valid order:', storedOrderId)
+            setDestinationAddress(storedAddress)
+            return storedAddress
+          }
+        }
+      }
+      
+      // If we reach here, either forceCreate is true or we need a new order
+      console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
+      
+      // Step 1: Get account name and rate in parallel
+      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
+      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
+      
+      try {
+        const [accountNameResponse, nairaRateResponse] = await Promise.all([
+          fetch(verifyAccountEndpoint, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            },
+            body: JSON.stringify({
+              institution: bankDetails.institution,
+              accountIdentifier: bankDetails.accountIdentifier
+            })
+          }),
+          fetch(nairaRateEndpoint, {
+            headers: { 
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            }
+          })
+        ])
+        
+        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
+          console.error('Failed to fetch account details or rate')
+          return null
+        }
+        
+        const accountData = await accountNameResponse.json()
+        const rateData = await nairaRateResponse.json()
+        
+        if (!accountData.data || !rateData.data) {
+          console.error('Invalid response from Paycrest API')
+          return null
+        }
+        
+        const accountName = accountData.data?.accountName || "Unknown Account"
+        const rate = rateData.data || DEFAULT_RATE
+        
+        console.log('Account verification successful:', accountName)
+        console.log('Current Naira rate:', rate)
+        
+        // Step 2: Create the order with the correct payload format
+        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
+        
+        // Get connected wallet address for return address
+        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress')
+        
+        // If wallet is Solana or no valid EVM address is available, use default address
+        if (walletType === 'svm' || !walletAddress || !walletAddress.startsWith('0x')) {
+          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)')
+          walletAddress = DEFAULT_DESTINATION_ADDRESS
+        }
+        
+        // Generate a unique reference
+        const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+        
+        // Create order with the required payload format
+        const orderPayload = {
+          amount: 100.00, // Minimum amount for order creation
+          token: "USDC",
+          rate: rate,
+          network: "base", // Using base network for USDC
+          recipient: {
+            institution: bankDetails.institution,
+            accountIdentifier: bankDetails.accountIdentifier,
+            accountName: accountName,
+            memo: "Payment via DirectPay"
+          },
+          returnAddress: walletAddress,
+          reference: reference
+        }
+        
+        console.log('Sending order payload:', orderPayload)
+        
+        const orderResponse = await fetch(createOrderEndpoint, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+          },
+          body: JSON.stringify(orderPayload)
+        })
+        
+        if (!orderResponse.ok) {
+          const errorText = await orderResponse.text()
+          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
+          return null
+        }
+        
+        const orderData = await orderResponse.json()
+        
+        if (!orderData.data) {
+          console.error('Order creation failed:', orderData.message || 'Unknown error')
+          return null
+        }
+        
+        console.log('Order creation successful:', orderData.data)
+        
+        // Save order details
+        localStorage.setItem('paycrestOrderId', orderData.data.id)
+        localStorage.setItem('paycrestReference', reference)
+        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        localStorage.setItem('lastOrderTimestamp', now.toString())
+        
+        // Save and use the new receive address
+        const receiveAddress = orderData.data.receiveAddress
+        if (receiveAddress) {
+          console.log('New receive address generated:', receiveAddress)
+          localStorage.setItem('paycrestReceiveAddress', receiveAddress)
+          setDestinationAddress(receiveAddress)
+          
+          // Save connected wallet address for future use (only if it's an EVM address)
+          if (walletAddress && walletAddress.startsWith('0x')) {
+            localStorage.setItem('connectedWalletAddress', walletAddress)
+          }
+          
+          // Trigger storage event for other components
+          window.dispatchEvent(new StorageEvent('storage', {
+            key: 'paycrestReceiveAddress',
+            newValue: receiveAddress
+          }))
+          
+          // Mark last valid order
+          lastValidOrderRef.current = {
+            address: receiveAddress,
+            timestamp: now
+          }
+          
+          setOrderStatus('valid')
+          return receiveAddress
+        }
+        
+        return null
+      } catch (error) {
+        console.error('API request failed:', error)
+        return null
+      }
+    } catch (error) {
+      console.error('Error creating order:', error)
+      return null
+    }
+  }, [connectedAddress, walletType]);
+
   // Watch for changes in the receive address
   useEffect(() => {
     const checkReceiveAddress = () => {
@@ -235,91 +428,99 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [])
   
-  // Update wallet connection handling
-  useEffect(() => {
-    const setupWallet = async () => {
-      if (!ready || !user) return;
-      
-      try {
-        // Check for EVM wallet
-        if (walletClient) {
-          console.log("Setting up EVM wallet");
-          const adapted = adaptViemWallet(walletClient);
-          setAdaptedWallet(adapted);
-          setWalletType('evm');
-          console.log("EVM wallet adapted:", adapted);
-          return;
-        }
-        
-        // Check for Solana wallet in user's linked wallets from Privy
-        const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
-        console.log("Checking linked accounts for Solana wallet:", linkedAccounts);
-        
-        // Find Solana wallet by checking address format and chain type
-        const solanaWallet = linkedAccounts.find(account => {
-          // Log each account for debugging
-          console.log("Checking account:", account);
-          
-          // Check if it's a wallet
-          if (account.type !== 'wallet') return false;
-          
-          // Check if the address looks like a Solana address (base58, 32-44 chars)
-          const isSolanaAddress = typeof account.address === 'string' && 
-                                !account.address.startsWith('0x') && 
-                                /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(account.address);
-          
-          // Check chain type if available
-          const isSolanaChain = account.chainType?.toLowerCase() === 'solana';
-          
-          // Check wallet client type if available
-          const isSolanaClient = account.walletClientType?.toLowerCase().includes('solana') || 
-                                account.walletClientType?.toLowerCase().includes('phantom') ||
-                                account.walletClientType?.toLowerCase().includes('solflare');
-          
-          const isSolanaWallet = isSolanaAddress || isSolanaChain || isSolanaClient;
-          
-          if (isSolanaWallet) {
-            console.log("Found Solana wallet:", account);
-          }
-          
-          return isSolanaWallet;
-        });
-          
-        if (solanaWallet) {
-          console.log("Setting up Solana wallet:", solanaWallet);
-          setWalletType('svm');
-          
-          // Create a proper Solana wallet interface
-          const solanaInterface = {
-            publicKey: solanaWallet.address,
-            signTransaction: async (transaction: VersionedTransaction | Transaction) => {
-              return transaction;
-            },
-            signAllTransactions: async (transactions: (VersionedTransaction | Transaction)[]) => {
-              return transactions;
-            },
-            signMessage: async (message: Uint8Array) => {
-              return message;
-            }
-          };
-          
-          // Adapt the Solana wallet
-          try {
-            const adapted = await adaptSolanaWallet(solanaInterface);
-            setAdaptedWallet(adapted);
-            console.log("Solana wallet adapted successfully:", adapted);
-          } catch (err) {
-            console.error("Error adapting Solana wallet:", err);
-          }
-        } else {
-          console.log("No Solana wallet found in linked accounts");
-        }
-      } catch (err) {
-        console.error("Error in setupWallet:", err);
-      }
-    };
+  // Define setupWallet at component level
+  const setupWallet = useCallback(async () => {
+    if (!ready || !user) return;
     
-    setupWallet();
+    try {
+      // Log full user object for debugging
+      console.log("Full Privy user object:", JSON.stringify(user, null, 2));
+      
+      // Check for EVM wallet first
+      if (walletClient) {
+        const adapted = adaptViemWallet(walletClient);
+        setAdaptedWallet(adapted);
+        setWalletType('evm');
+        console.log("EVM wallet connected:", adapted);
+        return;
+      }
+      
+      // Enhanced Solana wallet detection
+      const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
+      console.log("Checking linked accounts:", linkedAccounts);
+      
+      // Find any Solana-compatible wallet
+      const solanaWallet = linkedAccounts.find(account => {
+        const walletType = (account.walletClientType || '').toLowerCase();
+        const isConnected = account.address && account.type === 'wallet';
+        const isSolanaCompatible = 
+          walletType.includes('solana') ||
+          walletType.includes('phantom') ||
+          walletType.includes('solflare') ||
+          walletType.includes('backpack') ||
+          walletType.includes('glow') ||
+          (account.chainId === 'solana' || account.type === 'solana');
+        
+        if (isConnected && isSolanaCompatible) {
+          console.log("Found Solana compatible wallet:", {
+            type: walletType,
+            address: account.address,
+            chainId: account.chainId
+          });
+        }
+        
+        return isConnected && isSolanaCompatible;
+      });
+      
+      // Also check direct wallet property
+      const directWallet = user.wallet;
+      const isDirectWalletSolana = directWallet && (
+        (directWallet.chainType || '').toLowerCase() === 'solana' ||
+        (directWallet.walletClientType || '').toLowerCase().includes('solana') ||
+        (directWallet.walletClientType || '').toLowerCase().includes('phantom') ||
+        (directWallet.walletClientType || '').toLowerCase().includes('solflare')
+      );
+      
+      // Use either found wallet
+      const activeWallet = solanaWallet || (isDirectWalletSolana ? directWallet : null);
+      
+      if (activeWallet) {
+        console.log("Setting up Solana wallet:", activeWallet);
+        setWalletType('svm');
+        
+        // Create proper Solana wallet interface
+        const solanaInterface = {
+          publicKey: new PublicKey(activeWallet.address),
+          signTransaction: async (transaction: VersionedTransaction | Transaction) => {
+            return transaction;
+          },
+          signAllTransactions: async (transactions: (VersionedTransaction | Transaction)[]) => {
+            return transactions;
+          },
+          signMessage: async (message: Uint8Array) => {
+            return message;
+          }
+        };
+        
+        try {
+          const adapted = await adaptSolanaWallet(solanaInterface);
+          console.log("Solana wallet adapted successfully:", adapted);
+          setAdaptedWallet(adapted);
+        } catch (err: unknown) {
+          console.error("Error adapting Solana wallet:", err);
+          setWalletType(null);
+          setAdaptedWallet(undefined);
+        }
+      } else {
+        console.log("No compatible wallet found in user object");
+        setWalletType(null);
+        setAdaptedWallet(undefined);
+      }
+    } catch (err: unknown) {
+      console.error("Error in wallet setup:", err);
+      setWalletType(null);
+      setAdaptedWallet(undefined);
+    }
   }, [ready, user, walletClient]);
   
   // Define tokens outside of render cycle
@@ -737,25 +938,53 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }
 
-  async function handleWalletConnection(connectorType?: string) {
+  // Update handleWalletConnection to use handleError and proper types
+  const handleWalletConnection = useCallback(async (connectorType?: string): Promise<void> => {
     console.log("Wallet connection requested, type:", connectorType);
     
     if (!authenticated) {
       console.log("User not authenticated, initiating login");
-      await login();
-    } else if (connectorType) {
-      console.log("Connecting specific wallet type:", connectorType);
-      if (connectorType.toLowerCase().includes('solana') || 
-          connectorType.toLowerCase().includes('phantom')) {
-        console.log("Connecting Solana wallet");
+      try {
+        await login();
+      } catch (err: unknown) {
+        handleError(err);
+      }
+      return;
+    }
+    
+    try {
+      // Determine if this is a Solana wallet request
+      const walletType = connectorType?.toLowerCase() || '';
+      const isSolanaWallet = walletType && (
+        walletType.includes('solana') ||
+        walletType.includes('phantom') ||
+        walletType.includes('solflare') ||
+        walletType.includes('backpack') ||
+        walletType.includes('glow')
+      );
+      
+      if (isSolanaWallet) {
+        console.log("Connecting Solana wallet:", connectorType);
         setWalletType('svm');
       }
+      
+      // Link the wallet through Privy
       await linkWallet();
-    } else {
-      console.log("Connecting additional wallet");
-      await linkWallet();
+      
+      // Give the wallet a moment to connect before checking state
+      setTimeout(() => {
+        if (!adaptedWallet) {
+          console.log("Wallet connection may need refresh, checking state...");
+          setupWallet().catch(handleError);
+        }
+      }, 1000);
+    } catch (error: unknown) {
+      handleError(error);
+      // Reset wallet state on error
+      setWalletType(null);
+      setAdaptedWallet(undefined);
     }
-  }
+  }, [authenticated, login, linkWallet, adaptedWallet, setupWallet, handleError]);
 
   function handleAnalyticEvent(e: any) {
     if (!e || !e.eventName) return
@@ -768,7 +997,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       if (storedReceiveAddress) {
         console.log(`Setting recipient in quote request to Paycrest receive address:`, storedReceiveAddress);
         e.data.parameters.recipient = storedReceiveAddress;
-      } else {
+    } else {
         console.warn('No Paycrest receive address found for quote request');
       }
     }
@@ -786,24 +1015,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       setSwapSuccessOccurred(false)
       
       setTimeout(() => {
-        if (authenticated && logout) {
-          // Clear local storage
-          localStorage.removeItem('paycrestReceiveAddress')
-          localStorage.removeItem('paycrestOrderId')
-          localStorage.removeItem('paycrestReference')
-          localStorage.removeItem('paycrestValidUntil')
-          localStorage.removeItem('lastOrderTimestamp')
-          
-          // Log the user out
-          logout()
-            .then(() => {
-              console.log('User logged out successfully after swap')
-              window.location.reload()
-            })
-            .catch(err => {
-              console.error('Failed to log out user:', err)
-            })
-        }
+        handleLogout();
       }, 1000)
     }
     
@@ -1081,186 +1293,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [])
 
-  // Enhanced order management function
-  const createNewOrder = async (forceCreate = false) => {
-    try {
-      // Get bank details from localStorage
-      const storedBank = localStorage.getItem('linkedBankAccount')
-      if (!storedBank) {
-        console.warn('No bank details found, cannot create order')
-        return null
-      }
-      
-      const bankDetails = JSON.parse(storedBank)
-      
-      // Get current time and check if we need a new order
-      const now = Date.now()
-      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
-      
-      // Only check for existing order if not forced to create a new one
-      if (!forceCreate) {
-        // If it hasn't been 30 minutes since the last order was created
-        if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
-          // Check if we already have a valid order
-          const storedAddress = localStorage.getItem('paycrestReceiveAddress')
-          const storedOrderId = localStorage.getItem('paycrestOrderId')
-          
-          if (storedAddress && storedOrderId) {
-            console.log('Using existing valid order:', storedOrderId)
-            setDestinationAddress(storedAddress)
-            return storedAddress
-          }
-        }
-      }
-      
-      // If we reach here, either forceCreate is true or we need a new order
-      console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
-      
-      // Step 1: Get account name and rate in parallel
-      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
-      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
-      
-      try {
-        const [accountNameResponse, nairaRateResponse] = await Promise.all([
-          fetch(verifyAccountEndpoint, {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-            },
-            body: JSON.stringify({
-              institution: bankDetails.institution,
-              accountIdentifier: bankDetails.accountIdentifier
-            })
-          }),
-          fetch(nairaRateEndpoint, {
-            headers: { 
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-            }
-          })
-        ])
-        
-        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
-          console.error('Failed to fetch account details or rate')
-          return null
-        }
-        
-        const accountData = await accountNameResponse.json()
-        const rateData = await nairaRateResponse.json()
-        
-        if (!accountData.data || !rateData.data) {
-          console.error('Invalid response from Paycrest API')
-          return null
-        }
-        
-        const accountName = accountData.data?.accountName || "Unknown Account"
-        const rate = rateData.data || DEFAULT_RATE
-        
-        console.log('Account verification successful:', accountName)
-        console.log('Current Naira rate:', rate)
-        
-        // Step 2: Create the order with the correct payload format
-        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
-        
-        // Get connected wallet address for return address
-        let walletAddress = connectedAddress || localStorage.getItem('connectedWalletAddress')
-        
-        // If wallet is Solana or no valid EVM address is available, use default address
-        if (walletType === 'svm' || !walletAddress || !walletAddress.startsWith('0x')) {
-          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)')
-          walletAddress = DEFAULT_DESTINATION_ADDRESS
-        }
-        
-        // Generate a unique reference
-        const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
-        
-        // Create order with the required payload format
-        const orderPayload = {
-          amount: 100.00, // Minimum amount for order creation
-          token: "USDC",
-          rate: rate,
-          network: "base", // Using base network for USDC
-          recipient: {
-            institution: bankDetails.institution,
-            accountIdentifier: bankDetails.accountIdentifier,
-            accountName: accountName,
-            memo: "Payment via DirectPay"
-          },
-          returnAddress: walletAddress,
-          reference: reference
-        }
-        
-        console.log('Sending order payload:', orderPayload)
-        
-        const orderResponse = await fetch(createOrderEndpoint, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
-          },
-          body: JSON.stringify(orderPayload)
-        })
-        
-        if (!orderResponse.ok) {
-          const errorText = await orderResponse.text()
-          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
-          return null
-        }
-        
-        const orderData = await orderResponse.json()
-        
-        if (!orderData.data) {
-          console.error('Order creation failed:', orderData.message || 'Unknown error')
-          return null
-        }
-        
-        console.log('Order creation successful:', orderData.data)
-        
-        // Save order details
-        localStorage.setItem('paycrestOrderId', orderData.data.id)
-        localStorage.setItem('paycrestReference', reference)
-        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
-        localStorage.setItem('lastOrderTimestamp', now.toString())
-        
-        // Save and use the new receive address
-        const receiveAddress = orderData.data.receiveAddress
-        if (receiveAddress) {
-          console.log('New receive address generated:', receiveAddress)
-          localStorage.setItem('paycrestReceiveAddress', receiveAddress)
-          setDestinationAddress(receiveAddress)
-          
-          // Save connected wallet address for future use (only if it's an EVM address)
-          if (walletAddress && walletAddress.startsWith('0x')) {
-            localStorage.setItem('connectedWalletAddress', walletAddress)
-          }
-          
-          // Trigger storage event for other components
-          window.dispatchEvent(new StorageEvent('storage', {
-            key: 'paycrestReceiveAddress',
-            newValue: receiveAddress
-          }))
-          
-          // Mark last valid order
-          lastValidOrderRef.current = {
-            address: receiveAddress,
-            timestamp: now
-          }
-          
-          setOrderStatus('valid')
-          return receiveAddress
-        }
-        
-        return null
-      } catch (error) {
-        console.error('API request failed:', error)
-        return null
-      }
-    } catch (error) {
-      console.error('Error creating order:', error)
-      return null
-    }
-  }
-
   // Periodic order check and refresh - every 30 minutes
   useEffect(() => {
     // Create this function outside the effect
@@ -1292,14 +1324,49 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     return () => clearInterval(interval)
   }, [lastOrderTime])
 
-  // Remove the balance refresh effect since the SwapWidget handles balance updates internally
+  // Add this effect to handle wallet balance display
   useEffect(() => {
-    if (!adaptedWallet || !walletType) return;
-    
-    // Log wallet connection for debugging
-    console.log(`Wallet connected - Type: ${walletType}`);
-    
+    if (adaptedWallet && walletType) {
+      // Force a refresh of the wallet balance display
+      const refreshBalance = () => {
+        const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
+        balanceElements.forEach(element => {
+          if (element.textContent?.includes('Balance:')) {
+            // Trigger a re-render by updating the element
+            element.setAttribute('data-balance-updated', Date.now().toString());
+          }
+        });
+      };
+
+      // Initial refresh
+      refreshBalance();
+
+      // Set up periodic refresh
+      const interval = setInterval(refreshBalance, 2000);
+    return () => clearInterval(interval);
+    }
   }, [adaptedWallet, walletType]);
+
+  // Update the logout handler to use proper error typing
+  const handleLogout = useCallback(async () => {
+    if (authenticated && logout) {
+      try {
+        // Clear local storage
+        localStorage.removeItem('paycrestReceiveAddress');
+        localStorage.removeItem('paycrestOrderId');
+        localStorage.removeItem('paycrestReference');
+        localStorage.removeItem('paycrestValidUntil');
+        localStorage.removeItem('lastOrderTimestamp');
+        
+        // Log the user out
+        await logout();
+        console.log('User logged out successfully after swap');
+        window.location.reload();
+      } catch (err: unknown) {
+        handleError(err);
+      }
+    }
+  }, [authenticated, logout, handleError]);
 
   return (
     <div className="swap-page-center">
@@ -1560,74 +1627,54 @@ if (typeof window !== 'undefined') {
         margin-top: 16px;
         padding-top: 12px;
         border-top: 1px solid rgba(255,255,255,0.05);
-        z-index: 1;
       }
       
       .slippage-button {
-        background: rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.05);
         border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 12px;
-        padding: 8px 16px;
-        color: rgba(255,255,255,0.8);
-        font-size: 13px;
-        font-weight: 500;
+        border-radius: 8px;
+        padding: 6px 12px;
+        color: rgba(255,255,255,0.7);
+        font-size: 12px;
         cursor: pointer;
         transition: all 0.2s ease;
-        display: flex;
-        align-items: center;
-        gap: 4px;
+        margin-right: 12px;
+        margin-bottom: 12px;
       }
       
       .slippage-button:hover {
-        background: rgba(255,255,255,0.12);
-        border-color: rgba(255,255,255,0.15);
-      }
-      
-      .slippage-button:active {
-        transform: translateY(1px);
+        background: rgba(255,255,255,0.1);
+        border-color: rgba(255,255,255,0.2);
       }
       
       .slippage-dropdown {
         position: absolute;
-        top: auto;
-        bottom: calc(100% + 8px);
-        right: 0;
+        top: 100%;
+        right: 12px;
+        margin-top: 8px;
         background: #2A2D36;
         border: 1px solid rgba(255,255,255,0.1);
         border-radius: 12px;
         padding: 16px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-        min-width: 240px;
+        min-width: 200px;
       }
 
-      /* Ensure swap button is above slippage */
+      /* Ensure swap button and other controls are properly spaced */
       .relay-button {
         position: relative;
         z-index: 2;
-        margin-bottom: 0 !important;
+        margin-bottom: 8px;
       }
 
-      /* Add spacing after the swap button */
-      .relay-kit > div:last-child {
-        margin-bottom: 0 !important;
+      /* Add spacing after the wallet connection section */
+      .relay-d_flex.relay-items_center.relay-justify_space-between.relay-gap_3.relay-w_100\\% {
+        margin-bottom: 12px;
       }
 
-      /* Responsive adjustments */
-      @media (max-width: 480px) {
-        .slippage-config-container {
-          margin-top: 12px;
-          padding-top: 10px;
-        }
-        
-        .slippage-button {
-          padding: 6px 12px;
-          font-size: 12px;
-        }
-        
-        .slippage-dropdown {
-          min-width: 200px;
-          padding: 12px;
-        }
+      /* Ensure clean spacing at the bottom of the widget */
+      .swap-card {
+        padding-bottom: 16px !important;
       }
     `;
     document.head.appendChild(style);
