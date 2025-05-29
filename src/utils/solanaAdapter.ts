@@ -12,9 +12,14 @@ import {
 import { LogLevel, getClient, type AdaptedWallet, type SignatureStepItem } from '@reservoir0x/relay-sdk'
 
 // Constants for RPC configuration
-const SOLANA_RPC_URL = 'https://frequent-indulgent-theorem.solana-mainnet.quiknode.pro/288c090b70deb85f86ba0f2feaad99f9e56e7c2d/'
+const SOLANA_RPC_URL = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://frequent-indulgent-theorem.solana-mainnet.quiknode.pro/288c090b70deb85f86ba0f2feaad99f9e56e7c2d/'
 const MAX_RETRIES = 3
 const INITIAL_BACKOFF = 1000 // 1 second
+
+// Validate RPC URL is available
+if (!SOLANA_RPC_URL) {
+  console.error('NEXT_PUBLIC_SOLANA_RPC_URL environment variable is not set');
+}
 
 // Helper function to wait with exponential backoff
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -54,9 +59,8 @@ export const adaptSolanaWallet = async (wallet: SolanaWalletInterface): Promise<
     httpHeaders: {
       'Content-Type': 'application/json',
       'User-Agent': 'DirectPay/1.0.0',
-      // Add any additional QuickNode specific headers if needed
     },
-    wsEndpoint: SOLANA_RPC_URL.replace('https://', 'wss://'), // WebSocket endpoint for better performance
+    wsEndpoint: SOLANA_RPC_URL.replace('https://', 'wss://'),
     confirmTransactionInitialTimeout: 60000, // 60 seconds
   });
   
