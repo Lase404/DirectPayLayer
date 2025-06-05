@@ -9,38 +9,16 @@ import {
   type SendOptions,
   type TransactionSignature
 } from '@solana/web3.js'
-import { LogLevel, getClient, type AdaptedWallet, type SignatureStepItem } from '@reservoir0x/relay-sdk'
+import {
+  LogLevel,
+  getClient,
+  type AdaptedWallet,
+  type TransactionStepItem
+} from '@reservoir0x/relay-sdk'
 
-// Constants for RPC configuration
-const SOLANA_RPC_URL = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://frequent-indulgent-theorem.solana-mainnet.quiknode.pro/288c090b70deb85f86ba0f2feaad99f9e56e7c2d/'
-const MAX_RETRIES = 3
-const INITIAL_BACKOFF = 1000 // 1 second
-
-// Validate RPC URL is available
-if (!SOLANA_RPC_URL) {
-  console.error('NEXT_PUBLIC_SOLANA_RPC_URL environment variable is not set');
-}
-
-// Helper function to wait with exponential backoff
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-
-// Helper function to get blockhash with retries
-async function getBlockhashWithRetry(connection: Connection, retries = MAX_RETRIES, backoff = INITIAL_BACKOFF): Promise<string> {
-  try {
-    const { blockhash } = await connection.getLatestBlockhash('confirmed')
-    return blockhash
-  } catch (error) {
-    if (retries <= 0) {
-      throw new Error('Failed to get blockhash after multiple attempts')
-    }
-    
-    console.warn(`Failed to get blockhash, retries left: ${retries}`, error)
-    await wait(backoff)
-    
-    // Retry with exponential backoff
-    return getBlockhashWithRetry(connection, retries - 1, backoff * 2)
-  }
-}
+// Constants for Solana chain IDs
+const SOLANA_CHAIN_ID = 792703809; // Relay's Solana chain ID
+const SOLANA_MAINNET_CHAIN_ID = 1399811149; // Standard Solana mainnet chain ID
 
 // Define the interface for the Solana wallet adapter
 export interface SolanaWalletInterface {
@@ -51,157 +29,207 @@ export interface SolanaWalletInterface {
   sendTransaction?: (transaction: Transaction | VersionedTransaction, connection: Connection) => Promise<{ signature: string }>;
 }
 
+// Constants for RPC configuration
+const QUICKNODE_URL = 'https://frequent-indulgent-theorem.solana-mainnet.quiknode.pro/288c090b70deb85f86ba0f2feaad99f9e56e7c2d/'
+
 // Enhanced adapter for Solana wallets
 export const adaptSolanaWallet = async (wallet: SolanaWalletInterface): Promise<AdaptedWallet> => {
-  // Create Solana connection with commitment level and custom headers
-  const connection = new Connection(SOLANA_RPC_URL, {
+  console.log('Initializing Solana wallet adapter...')
+  
+  // Create Solana connection with proper configuration
+  const connection = new Connection(QUICKNODE_URL, {
     commitment: 'confirmed',
     httpHeaders: {
       'Content-Type': 'application/json',
-      'User-Agent': 'DirectPay/1.0.0',
     },
-    wsEndpoint: SOLANA_RPC_URL.replace('https://', 'wss://'),
     confirmTransactionInitialTimeout: 60000, // 60 seconds
   });
   
   // Test the connection
   try {
     const version = await connection.getVersion();
-    console.log('Connected to Solana network:', version);
+    console.log('Successfully connected to Solana network:', version);
+    
+    // Additional connection test
+    const slot = await connection.getSlot();
+    console.log('Current slot:', slot);
   } catch (err) {
     console.error('Failed to connect to Solana network:', err);
-    throw new Error('Failed to establish Solana connection');
+    throw new Error(`Failed to establish Solana connection: ${err instanceof Error ? err.message : String(err)}`);
   }
+  
+  // Create a function to sign and send transactions
+  const signAndSendTransaction = async (
+    transaction: VersionedTransaction,
+    options?: SendOptions,
+    instructions?: TransactionInstruction[],
+    rawInstructions?: TransactionStepItem['data']['instructions']
+  ): Promise<{ signature: TransactionSignature }> => {
+    console.log('Signing and sending transaction...');
+    
+    try {
+      // Try to use the wallet's native sendTransaction method if available
+      if (wallet.sendTransaction) {
+        console.log('Using wallet.sendTransaction method...');
+        return await wallet.sendTransaction(transaction, connection);
+      }
+      
+      // Fall back to sign-then-send approach
+      console.log('Using sign-then-send approach...');
+      const signedTx = await wallet.signTransaction(transaction);
+      const signature = await connection.sendRawTransaction(
+        (signedTx as VersionedTransaction).serialize(),
+        options
+      );
+      
+      console.log('Transaction sent successfully with signature:', signature);
+      return { signature };
+    } catch (err) {
+      console.error('Error in signAndSendTransaction:', err);
+      throw new Error(`Failed to sign and send transaction: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  
+  // Use the streamlined implementation
+  return adaptSolanaWalletCore(
+    wallet.publicKey,
+    SOLANA_CHAIN_ID,
+    connection,
+    signAndSendTransaction
+  );
+}
 
+// Core adapter implementation based on the provided code
+export const adaptSolanaWalletCore = (
+  walletAddress: string,
+  chainId: number,
+  connection: Connection,
+  signAndSendTransaction: (
+    transaction: VersionedTransaction,
+    options?: SendOptions,
+    instructions?: TransactionInstruction[],
+    rawInstructions?: TransactionStepItem['data']['instructions']
+  ) => Promise<{
+    signature: TransactionSignature
+  }>
+): AdaptedWallet => {
+  let _chainId = chainId
   const getChainId = async () => {
-    return 1399811149 // Solana mainnet chain ID
+    console.log(`Getting chain ID: ${_chainId}`);
+    return _chainId
   }
 
   return {
     vmType: 'svm',
     getChainId,
     address: async () => {
-      return wallet.publicKey
+      console.log('Getting wallet public key:', walletAddress);
+      return walletAddress
     },
-    handleSignMessageStep: async (item: SignatureStepItem) => {
-      try {
-        if (!item.data?.sign?.message) {
-          throw new Error('No message provided for signing')
-        }
-        const messageBytes = Buffer.from(item.data.sign.message)
-        const signature = await wallet.signMessage(messageBytes)
-        return Buffer.from(signature).toString('hex')
-      } catch (err: any) {
-        console.error('Error signing message:', err)
-        throw new Error(`Failed to sign message with Solana wallet: ${err.message || 'Unknown error'}`)
-      }
+    handleSignMessageStep: async () => {
+      console.log('Message signing requested but not implemented');
+      throw new Error('Message signing not implemented for Solana')
     },
     handleSendTransactionStep: async (_chainId, stepItem) => {
+      console.log('Handling send transaction step...');
       const client = getClient()
 
-      try {
-        if (!stepItem?.data?.instructions) {
-          throw new Error('No instructions provided for transaction')
-        }
+        const instructions =
+          stepItem?.data?.instructions?.map(
+            (i) =>
+              new TransactionInstruction({
+                keys: i.keys.map((k) => ({
+                  isSigner: k.isSigner,
+                  isWritable: k.isWritable,
+                  pubkey: new PublicKey(k.pubkey)
+                })),
+                programId: new PublicKey(i.programId),
+                data: Buffer.from(i.data, 'hex')
+              })
+        ) ?? []
 
-        const instructions = stepItem.data.instructions.map(
-          (i) =>
-            new TransactionInstruction({
-              keys: i.keys.map((k) => ({
-                isSigner: k.isSigner,
-                isWritable: k.isWritable,
-                pubkey: new PublicKey(k.pubkey)
-              })),
-              programId: new PublicKey(i.programId),
-              data: Buffer.from(i.data, 'hex')
-            })
-        )
+      console.log('Getting latest blockhash...');
+      const blockhash = await connection
+        .getLatestBlockhash()
+        .then((b) => b.blockhash);
+      console.log('Blockhash obtained:', blockhash);
 
-        // Get blockhash with retry mechanism
-        const blockhash = await getBlockhashWithRetry(connection)
-
-        // Create transaction message
+      console.log('Creating transaction message...');
         const messageV0 = new TransactionMessage({
-          payerKey: new PublicKey(wallet.publicKey),
+        payerKey: new PublicKey(walletAddress),
           instructions,
-          recentBlockhash: blockhash
+        recentBlockhash: blockhash
         }).compileToV0Message(
           await Promise.all(
-            stepItem.data.addressLookupTableAddresses?.map(
-              async (address: string) => {
-                try {
-                  const response = await connection.getAddressLookupTable(new PublicKey(address))
-                  if (!response.value) {
-                    throw new Error(`No lookup table found for address: ${address}`)
-                  }
-                  return response.value as AddressLookupTableAccount
-                } catch (err: any) {
-                  console.error(`Error fetching lookup table for ${address}:`, err)
-                  throw new Error(`Failed to fetch lookup table: ${err.message || 'Unknown error'}`)
-                }
-              }
+            stepItem?.data?.addressLookupTableAddresses?.map(
+            async (address: string) => {
+              console.log('Fetching lookup table for address:', address);
+              return await connection
+                  .getAddressLookupTable(new PublicKey(address))
+                  .then((res) => res.value as AddressLookupTableAccount)
+            }
             ) ?? []
           )
-        )
+      )
 
-        // Create and sign transaction
-        const transaction = new VersionedTransaction(messageV0)
-        
-        let signature: string
-        try {
-          // Try to use wallet's send if available
-          if (wallet.sendTransaction) {
-            const result = await wallet.sendTransaction(transaction, connection)
-            signature = result.signature
-          } else {
-            // Sign the transaction
-            const signedTx = await wallet.signTransaction(transaction)
-            // Send the signed transaction
-            signature = await connection.sendRawTransaction((signedTx as VersionedTransaction).serialize())
-          }
-          
-          client.log(['Transaction signature obtained:', signature], LogLevel.Verbose)
-          return signature
-          
-        } catch (err: any) {
-          console.error('Error sending transaction:', err)
-          throw new Error(`Transaction send failed: ${err.message || 'Unknown error'}`)
-        }
+      console.log('Creating versioned transaction...');
+      const transaction = new VersionedTransaction(messageV0)
+      
+      console.log('Signing and sending transaction...');
+      const signature = await signAndSendTransaction(
+        transaction,
+        undefined,
+        instructions,
+        stepItem.data.instructions
+      )
 
-      } catch (err: any) {
-        console.error('Error in handleSendTransactionStep:', err)
-        throw new Error(`Failed to send Solana transaction: ${err.message || 'Unknown error'}`)
-      }
+      console.log('Transaction signature obtained:', signature.signature);
+      client.log(
+        ['Transaction Signature obtained', signature],
+        LogLevel.Verbose
+      )
+
+      return signature.signature
     },
     handleConfirmTransactionStep: async (txHash) => {
-      try {
-        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+      console.log('Handling confirm transaction step for hash:', txHash);
+      // Solana doesn't have a concept of replaced transactions
+      // So we don't need to handle onReplaced and onCancelled
 
-        const result = await connection.confirmTransaction({
-          blockhash,
-          lastValidBlockHeight,
-          signature: txHash
-        }, 'confirmed')
+      console.log('Getting latest blockhash for confirmation...');
+      const { blockhash, lastValidBlockHeight } =
+        await connection.getLatestBlockhash('confirmed')
 
-        if (result.value.err) {
-          throw new Error(`Transaction failed: ${result.value.err}`)
-        }
+      console.log('Confirming transaction...');
+      const result = await connection.confirmTransaction({
+        blockhash: blockhash,
+        lastValidBlockHeight: lastValidBlockHeight,
+        signature: txHash
+      })
 
-        return {
-          blockHash: result.context.slot.toString(),
-          blockNumber: result.context.slot,
-          txHash
-        }
-      } catch (err: any) {
-        console.error('Error confirming transaction:', err)
-        throw new Error(`Failed to confirm Solana transaction: ${err.message || 'Unknown error'}`)
+      if (result.value.err) {
+        console.error('Transaction confirmation failed:', result.value.err);
+        throw new Error(`Transaction failed: ${result.value.err}`)
+      }
+
+      console.log('Transaction confirmed successfully!');
+      return {
+        blockHash: result.context.slot.toString(),
+        blockNumber: result.context.slot,
+        txHash
       }
     },
-    switchChain: async (chainId: number) => {
-      // Solana doesn't need chain switching, but we'll validate the chain ID
-      if (chainId !== 1399811149) {
-        throw new Error('Invalid Solana chain ID')
+    switchChain: (chainId: number) => {
+      console.log('Chain switch requested to:', chainId);
+      // Accept both Relay's Solana chain ID and the standard Solana mainnet chain ID
+      const validChainIds = [SOLANA_CHAIN_ID, SOLANA_MAINNET_CHAIN_ID];
+      if (!validChainIds.includes(chainId)) {
+        console.error('Invalid Solana chain ID:', chainId);
+        throw new Error(`Invalid Solana chain ID: ${chainId}`);
       }
+      _chainId = chainId
+      console.log('Chain ID updated to:', _chainId);
+      return new Promise<void>((res) => res())
     }
   }
 } 
