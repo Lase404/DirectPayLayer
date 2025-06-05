@@ -18,17 +18,6 @@ import { useRelayChains } from '@reservoir0x/relay-kit-hooks'
 import { type WalletClient } from 'viem'
 import { User, Wallet } from '@privy-io/react-auth'
 
-/**
- * IMPORTANT: This file contains complex React state management across multiple scopes.
- * Some TypeScript linter errors are bypassed with ts-ignore comments, but the code
- * functions correctly at runtime since the React component's state is properly accessed.
- * 
- * If these TypeScript errors persist, consider:
- * 1. Using @ts-expect-error instead of @ts-ignore for more specific suppression
- * 2. Restructuring the component to avoid closure issues
- * 3. Using React context to share state across function boundaries
- */
-
 // Define token type
 interface Token {
   chainId: number
@@ -63,115 +52,10 @@ declare global {
 }
 
 // Constants
-const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc8E6779DfaF' // Only used for Solana wallets in Paycrest orders
-const PAYCREST_RETURN_ADDRESS = '0x4bf803FB45F9441c6b62B2A29674Cd4343E87DB2' // Always used for returnAddress in Paycrest orders
-const PAYCREST_API_KEY = '208a4aef-1320-4222-82b4-e3bca8781b4b'
+const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF' // Only used for Solana wallets in Paycrest orders
 const DEFAULT_RATE = 1600
 const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
 const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
-const PAYCREST_STATUS_CHECK_INTERVAL = 20 * 1000 // Check status every 20 seconds
-
-// Add this comment to indicate that the linter errors are known but don't affect functionality
-// NOTE: There are some linter errors in this file related to state variables and function references,
-// but the code works correctly at runtime. This is due to how the React component is structured.
-// @ts-ignore
-
-// Define types for Paycrest API responses
-interface PaycrestOrderResponse {
-  status: string;
-  message: string;
-  data: {
-    id: string;
-    amount: string;
-    amountPaid: string;
-    amountReturned: string;
-    token: string;
-    senderFee: string;
-    transactionFee: string;
-    rate: string;
-    network: string;
-    gatewayId: string;
-    recipient: {
-      institution: string;
-      accountIdentifier: string;
-      accountName: string;
-      memo: string;
-    };
-    fromAddress: string;
-    returnAddress: string;
-    receiveAddress: string;
-    feeAddress: string;
-    reference: string;
-    createdAt: string;
-    updatedAt: string;
-    txHash: string;
-    status: 'initiated' | 'expired' | 'settled' | 'processing' | 'completed' | 'returned' | 'refunded';
-    transactionLogs: Array<{
-      id: string;
-      gateway_id: string;
-      status: string;
-      tx_hash: string;
-      created_at: string;
-    }>;
-  };
-}
-
-interface PaycrestCreateOrderResponse {
-  status: string;
-  message: string;
-  data: {
-    id: string;
-    amount: string;
-    token: string;
-    network: string;
-    receiveAddress: string;
-    validUntil: string;
-    senderFee: string;
-    transactionFee: string;
-    reference: string;
-  };
-}
-
-// Simple, professional order status display
-const orderStatusStyles: {
-  initiated: { text: string; color: string; icon: string };
-  settled: { text: string; color: string; icon: string };
-  refunded: { text: string; color: string; icon: string };
-} = {
-  initiated: {
-    text: 'Order Processing',
-    color: 'text-blue-500',
-    icon: 'ClockIcon'
-  },
-  settled: {
-    text: 'Order Settled',
-    color: 'text-green-500',
-    icon: 'CheckCircleIcon'
-  },
-  refunded: {
-    text: 'Order Refunded',
-    color: 'text-orange-500',
-    icon: 'ArrowPathIcon'
-  }
-};
-
-// Descriptive status messages
-const messages: {
-  initiated: string;
-  settled: string;
-  refunded: string;
-} = { 
-  initiated: 'Payment processing has started', 
-  settled: 'Funds have been transferred to your bank account', 
-  refunded: 'Transaction has been refunded'
-};
-
-// Clean status display component
-const OrderStatusBadge = ({ status }: { status: string }) => (
-  <div className={`flex items-center gap-2 font-medium ${orderStatusStyles[status as keyof typeof orderStatusStyles]?.color || 'text-gray-500'}`}>
-    <span className="text-lg">{orderStatusStyles[status as keyof typeof orderStatusStyles]?.text || 'Order Status Unknown'}</span>
-  </div>
-);
 
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
@@ -184,16 +68,10 @@ const isSolanaAddress = (address: string): boolean => {
 
 // Helper function to ensure valid return address for Paycrest orders
 const getValidReturnAddress = (address: string, isPaycrestOrder: boolean = false): string => {
-  if (isPaycrestOrder) {
-    // For Paycrest orders, always return the safe address
-    return PAYCREST_RETURN_ADDRESS;
-  }
-  
-  if (isSolanaAddress(address)) {
-    console.log('Solana address detected, replacing with default destination:', address);
+  if (isSolanaAddress(address) || !address.startsWith('0x')) {
+    console.log('Non-EVM address detected, replacing with default destination:', address);
     return DEFAULT_DESTINATION_ADDRESS;
   }
-  
   return address;
 }
 
@@ -211,19 +89,22 @@ if (typeof window !== 'undefined') {
         if (options && options.body && typeof options.body === 'string') {
           try {
             const body = JSON.parse(options.body);
-            // Always set returnAddress to our secure address for Paycrest
-            if (body.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-              console.log(`API route: Enforcing secure returnAddress in Paycrest order: ${body.returnAddress} → ${PAYCREST_RETURN_ADDRESS}`);
-              body.returnAddress = PAYCREST_RETURN_ADDRESS;
-              
-              // Create new options with fixed body
-              const newOptions = {
-                ...options,
-                body: JSON.stringify(body)
-              };
-              
-              console.log('Sending validated Paycrest order payload:', body);
-              return originalFetch.apply(this, [resource, newOptions]);
+            // Check if the body contains a returnAddress field
+            if (body.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(body.returnAddress, true);
+              if (body.returnAddress !== validReturnAddress) {
+                console.log(`API route: Replacing Solana return address in Paycrest order: ${body.returnAddress} → ${validReturnAddress}`);
+                body.returnAddress = validReturnAddress;
+                
+                // Create new options with fixed body
+                const newOptions = {
+                  ...options,
+                  body: JSON.stringify(body)
+                };
+                
+                console.log('Sending validated Paycrest order payload:', body);
+                return originalFetch.apply(this, [resource, newOptions]);
+              }
             }
           } catch (e) {
             console.error('Error parsing fetch body:', e);
@@ -257,10 +138,13 @@ if (typeof window !== 'undefined') {
         if (this._relayUrl.includes('paycrest.io') && body && typeof body === 'string') {
           try {
             const data = JSON.parse(body);
-            if (data.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-              console.log(`API route: Enforcing secure returnAddress in Paycrest order: ${data.returnAddress} → ${PAYCREST_RETURN_ADDRESS}`);
-              data.returnAddress = PAYCREST_RETURN_ADDRESS;
-              return originalXHRSend.call(this, JSON.stringify(data));
+            if (data.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(data.returnAddress, true);
+              if (data.returnAddress !== validReturnAddress) {
+                console.log(`API route: Replacing Solana return address in Paycrest order: ${data.returnAddress} → ${validReturnAddress}`);
+                data.returnAddress = validReturnAddress;
+                return originalXHRSend.call(this, JSON.stringify(data));
+              }
             }
           } catch (e) {
             console.error('Error parsing XHR body:', e);
@@ -278,9 +162,12 @@ if (typeof window !== 'undefined') {
   axios.interceptors.request.use(config => {
     try {
       if (config.url && config.url.includes('paycrest.io') && config.data) {
-        if (config.data.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-          console.log(`API route: Enforcing secure returnAddress in Paycrest order: ${config.data.returnAddress} → ${PAYCREST_RETURN_ADDRESS}`);
-          config.data.returnAddress = PAYCREST_RETURN_ADDRESS;
+        if (config.data.returnAddress) {
+          const validReturnAddress = getValidReturnAddress(config.data.returnAddress, true);
+          if (config.data.returnAddress !== validReturnAddress) {
+            console.log(`API route: Replacing Solana return address in Paycrest order: ${config.data.returnAddress} → ${validReturnAddress}`);
+            config.data.returnAddress = validReturnAddress;
+          }
         }
       }
     } catch (error) {
@@ -310,41 +197,7 @@ interface SwapWidgetWrapperProps {
   onSwapSuccess?: (bankDetails?: any) => Promise<string | null>;
 }
 
-// Add a function to verify Paycrest order status
-const verifyPaycrestOrder = async (orderId: string): Promise<PaycrestOrderResponse | null> => {
-  try {
-    console.log(`Verifying Paycrest order status for ID: ${orderId}`);
-    
-    const response = await fetch(`https://api.paycrest.io/v1/sender/orders/${orderId}`, {
-      method: 'GET',
-      headers: {
-        'API-Key': PAYCREST_API_KEY,
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    if (!response.ok) {
-      console.error(`Failed to verify order status: ${response.status} ${response.statusText}`);
-      return null;
-    }
-    
-    const data: PaycrestOrderResponse = await response.json();
-    console.log(`Order ${orderId} status: ${data.data.status}`);
-    
-    // Verify the returnAddress is correct
-    if (data.data.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-      console.error(`CRITICAL: Order ${orderId} has incorrect returnAddress: ${data.data.returnAddress}`);
-      // We'll handle this by creating a new order with correct returnAddress
-    }
-    
-    return data;
-  } catch (error) {
-    console.error('Error verifying Paycrest order:', error);
-    return null;
-  }
-};
-
-// Move setupWallet function outside useEffect
+// Move setupWallet function outside useEffect and component
 export const setupWallet = async (
   ready: boolean,
   user: User | null,
@@ -468,199 +321,6 @@ export const setupWallet = async (
   }
 };
 
-// Enhanced order management function
-const createNewOrder = async (
-  forceCreate = false
-): Promise<string | null> => {
-  try {
-    // Get bank details from localStorage
-    const storedBank = localStorage.getItem('linkedBankAccount')
-    if (!storedBank) {
-      console.warn('No bank details found, cannot create order')
-      return null
-    }
-    
-    const bankDetails = JSON.parse(storedBank)
-    
-    // Get current time
-    const now = Date.now()
-    
-    // Only check for existing order if not forced to create a new one
-    if (!forceCreate) {
-      // Get existing order info
-      const storedOrderId = localStorage.getItem('paycrestOrderId')
-      const storedAddress = localStorage.getItem('paycrestReceiveAddress')
-      
-      if (storedOrderId && storedAddress) {
-        // CRITICAL: Verify order status before using
-        const orderStatus = await verifyPaycrestOrder(storedOrderId)
-        
-        if (orderStatus && orderStatus.data) {
-          console.log(`Checking order status: ${orderStatus.data.status}`)
-          
-          // Only use the order if it's still in 'initiated' status
-          if (orderStatus.data.status === 'initiated') {
-            // Also verify the bank details match current linked bank
-            const orderRecipient = orderStatus.data.recipient
-            if (
-              orderRecipient.institution === bankDetails.institution &&
-              orderRecipient.accountIdentifier === bankDetails.accountIdentifier
-            ) {
-              // Verify return address is correct
-              if (orderStatus.data.returnAddress === PAYCREST_RETURN_ADDRESS) {
-                console.log('Using existing valid order:', storedOrderId)
-                // @ts-ignore - React state variables are accessible in component scope
-                setDestinationAddress(storedAddress)
-                return storedAddress
-      } else {
-                console.error('Existing order has incorrect return address, creating new order')
-                // Continue to create new order
-              }
-            } else {
-              console.warn('Bank details mismatch - order uses different bank than currently linked, creating new order')
-              // Continue to create new order
-            }
-          } else {
-            console.log(`Order status is ${orderStatus.data.status}, cannot reuse. Creating new order.`)
-            // Continue to create new order
-          }
-        } else {
-          console.warn('Failed to verify order status, creating new order')
-          // Continue to create new order
-        }
-      }
-    }
-    
-    // If we reach here, either forceCreate is true or we need a new order
-    console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
-    
-    // Step 1: Get account name and rate in parallel
-    const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
-    const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
-    
-    try {
-      const [accountNameResponse, nairaRateResponse] = await Promise.all([
-        fetch(verifyAccountEndpoint, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "API-Key": PAYCREST_API_KEY
-          },
-          body: JSON.stringify({
-            institution: bankDetails.institution,
-            accountIdentifier: bankDetails.accountIdentifier
-          })
-        }),
-        fetch(nairaRateEndpoint, {
-          headers: { 
-            "API-Key": PAYCREST_API_KEY
-          }
-        })
-      ])
-      
-      if (!accountNameResponse.ok) {
-        console.error('Failed to fetch account details')
-        return null
-      }
-      
-      const accountData = await accountNameResponse.json()
-      const rateData = await nairaRateResponse.json()
-      
-      if (!accountData.data) {
-        console.error('Invalid response from Paycrest API')
-        return null
-      }
-      
-      const accountName = accountData.data?.accountName || "Unknown Account"
-      const rate = rateData.data || DEFAULT_RATE
-      
-      console.log('Account verification successful:', accountName)
-      console.log('Current Naira rate:', rate)
-      
-      // Step 2: Create the order with the correct payload format
-      const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
-      
-      // ALWAYS use our secure return address
-      // No conditional logic here to prevent any possibility of errors
-      const returnAddress = PAYCREST_RETURN_ADDRESS
-      console.log('Using secure Paycrest return address:', returnAddress)
-      
-      // Generate a unique reference
-      const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
-      
-      // Create order with the required payload format
-      const orderPayload = {
-        amount: 100.00, // Minimum amount for order creation
-        token: "USDC",
-        rate: rate,
-        network: "base", // Using base network for USDC
-        recipient: {
-          institution: bankDetails.institution,
-          accountIdentifier: bankDetails.accountIdentifier,
-          accountName: accountName,
-          memo: "Payment via DirectPay"
-        },
-        returnAddress: returnAddress,
-        reference: reference
-      }
-      
-      console.log('Sending order payload:', orderPayload)
-      
-      const orderResponse = await fetch(createOrderEndpoint, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "API-Key": PAYCREST_API_KEY
-        },
-        body: JSON.stringify(orderPayload)
-      })
-      
-      if (!orderResponse.ok) {
-        const errorText = await orderResponse.text()
-        console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
-        return null
-      }
-      
-      const orderData = await orderResponse.json()
-      
-      if (!orderData.data) {
-        console.error('Order creation failed:', orderData.message || 'Unknown error')
-        return null
-      }
-      
-      console.log('Order creation successful:', orderData.data)
-      
-      // Save order details including bank info
-      localStorage.setItem('paycrestOrderId', orderData.data.id)
-      localStorage.setItem('paycrestReference', reference)
-      localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
-      localStorage.setItem('lastOrderTimestamp', now.toString())
-      
-      // IMPORTANT: Save bank info to check for changes later
-      localStorage.setItem('paycrestBankInstitution', bankDetails.institution)
-      localStorage.setItem('paycrestBankAccount', bankDetails.accountIdentifier)
-      
-      // Save and use the new receive address
-      const receiveAddress = orderData.data.receiveAddress
-      if (receiveAddress) {
-        console.log('New receive address generated:', receiveAddress)
-        localStorage.setItem('paycrestReceiveAddress', receiveAddress)
-        // @ts-ignore - React state variables are accessible in component scope
-        setDestinationAddress(receiveAddress)
-        return receiveAddress
-      }
-      
-      return null
-    } catch (error) {
-      console.error('API request failed:', error)
-      return null
-    }
-  } catch (error) {
-    console.error('Error creating order:', error)
-    return null
-  }
-};
-
 export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperProps) {
   const { login, authenticated, user, ready, linkWallet, logout } = usePrivy()
   const { data: walletClient } = useWalletClient()
@@ -694,10 +354,45 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   const [lastOrderTime, setLastOrderTime] = useState<number>(0)
   const { address: connectedAddress } = useAccount()
   const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
+  const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
   const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
   const [showSlippageConfig, setShowSlippageConfig] = useState(false)
-  const [currentOrderId, setCurrentOrderId] = useState<string | null>(null)
+  
+  // Watch for changes in the receive address
+  useEffect(() => {
+    const checkReceiveAddress = () => {
+      const storedAddress = localStorage.getItem('paycrestReceiveAddress')
+      if (storedAddress && /^0x[a-fA-F0-9]{40}$/.test(storedAddress)) {
+        setDestinationAddress(storedAddress)
+      }
+    }
+
+    // Check immediately
+    checkReceiveAddress()
+
+    // Set up storage event listener
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'paycrestReceiveAddress') {
+        checkReceiveAddress()
+      }
+    }
+
+    window.addEventListener('storage', handleStorageChange)
+
+    // Also check periodically for local changes
+    const interval = setInterval(checkReceiveAddress, 1000)
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      clearInterval(interval)
+    }
+  }, [])
+  
+  // Move setupWallet function outside useEffect
+  useEffect(() => {
+    setupWallet(ready, user, walletClient, setAdaptedWallet, setWalletType, setError);
+  }, [ready, user, walletClient]);
   
   // Define tokens outside of render cycle
   const [fromToken, setFromTokenState] = useState<Token | undefined>(undefined);
@@ -709,263 +404,271 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     logoURI: 'https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75'
   });
 
-  // Function to validate current order and create a new one if needed
-  const validateCurrentOrder = async (): Promise<boolean> => {
-    const orderId = localStorage.getItem('paycrestOrderId');
-    if (!orderId) {
-      console.log('No order ID found, will create new order');
-      return false;
-    }
-    
-    setCurrentOrderId(orderId);
-    
-    // Check order status
-    const orderStatus = await verifyPaycrestOrder(orderId);
-    if (!orderStatus || !orderStatus.data) {
-      console.warn('Failed to verify order status, will create new order');
-      return false;
-    }
-    
-    // Check if order is still valid
-    if (orderStatus.data.status !== 'initiated') {
-      console.log(`Order ${orderId} has status ${orderStatus.data.status}, will create new order`);
-      return false;
-    }
-    
-    // Check if the bank details match the current bank
-    const storedBankInstitution = localStorage.getItem('paycrestBankInstitution');
-    const storedBankAccount = localStorage.getItem('paycrestBankAccount');
-    const storedBank = localStorage.getItem('linkedBankAccount');
-    
-    if (!storedBank || !storedBankInstitution || !storedBankAccount) {
-      console.warn('Missing bank information, will create new order');
-      return false;
-    }
-    
-    const bankDetails = JSON.parse(storedBank);
-    
-    if (
-      bankDetails.institution !== storedBankInstitution ||
-      bankDetails.accountIdentifier !== storedBankAccount ||
-      orderStatus.data.recipient.institution !== bankDetails.institution ||
-      orderStatus.data.recipient.accountIdentifier !== bankDetails.accountIdentifier
-    ) {
-      console.warn('Bank details mismatch, will create new order');
-      return false;
-    }
-    
-    // Check if return address is correct
-    if (orderStatus.data.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-      console.error('Return address mismatch, will create new order');
-      return false;
-    }
-    
-    // Order is valid
-    console.log(`Order ${orderId} is valid and can be used`);
-    return true;
-  }
-  
-  // Initialize with a valid order
+  // Fetch Paycrest rate and update it periodically
   useEffect(() => {
-    const initializeOrder = async () => {
-      const isOrderValid = await validateCurrentOrder();
-      if (!isOrderValid) {
-        // Create a new order
-        const receiveAddress = await createNewOrder(true);
-        if (receiveAddress) {
-          setDestinationAddress(receiveAddress);
-          setOrderStatus('valid');
-        } else {
-          setOrderStatus('none');
-        }
-      } else {
-        // Use existing order
-        const receiveAddress = localStorage.getItem('paycrestReceiveAddress');
-        if (receiveAddress) {
-          setDestinationAddress(receiveAddress);
-          setOrderStatus('valid');
-        }
-      }
-    };
-    
-    // Only run if we have a bank account
-    const storedBank = localStorage.getItem('linkedBankAccount');
-    if (storedBank) {
-      initializeOrder();
-    }
-  }, []);
-  
-  // Periodic order check and refresh - every 30 minutes
-  useEffect(() => {
-    // Create this function outside the effect
-    const checkAndUpdateOrder = async () => {
+    const fetchRate = async () => {
       try {
-        const now = Date.now();
-        const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0');
-        const storedOrderId = localStorage.getItem('paycrestOrderId');
-        const storedAddress = localStorage.getItem('paycrestReceiveAddress');
+        setIsRateLoading(true)
+        const rate = await getRatesForOfframp()
+      if (rate && typeof rate.NGN === 'number' && isFinite(rate.NGN) && rate.NGN > 0) {
+          console.log("Rate fetched successfully:", rate.NGN)
+          setPaycrestRate(rate.NGN)
+          rateRef.current = rate.NGN
+          setError(null) // Clear any existing errors
+      } else {
+          console.warn("Invalid rate received, using default:", DEFAULT_RATE)
+          // Don't set error for invalid rate, just use default
+        }
+      } catch (err) {
+        console.error('Error fetching rate:', err)
+        // Don't set error state for rate fetch failures
+        // Just continue using the default or last known good rate
+      } finally {
+        setIsRateLoading(false)
+      }
+    }
+
+    // Fetch immediately but don't block rendering
+    setTimeout(fetchRate, 0)
+
+    // Then fetch every 30 seconds, but only if the component is mounted
+    let mounted = true
+    const interval = setInterval(() => {
+      if (mounted) {
+        fetchRate().catch(() => {
+          // Silently handle background fetch errors
+        })
+      }
+    }, 30000)
+
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
+  }, [])
+
+  // Intercept network requests to enforce destination address
+  useEffect(() => {
+    // Save original fetch
+    const originalFetch = window.fetch;
+    
+    console.log("Setting up enhanced API request interceptor");
+    
+    // Replace fetch with our enhanced version
+    window.fetch = async function(input, init) {
+      let url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input instanceof Request ? input.url : '';
+      
+      // Check if this is a relay API call
+      if (url.includes('api.relay') || url.includes('quote')) {
+        console.log("Intercepting Relay API call:", url);
         
-        // Always verify the current order status first
-        if (storedOrderId) {
-          const orderStatus = await verifyPaycrestOrder(storedOrderId);
-          
-          // Critical checks:
-          // 1. Is the order still valid (initiated status)?
-          // 2. Is the return address correct?
-          // 3. Do the bank details match the currently linked bank?
-          
-          if (orderStatus && orderStatus.data) {
-            console.log(`Periodic check: Order ${storedOrderId} status is ${orderStatus.data.status}`);
+        // If it has a body, enforce our destination address
+        if (init && init.body) {
+          let body;
+          try {
+            // Parse the body
+            const bodyText = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+            body = JSON.parse(bodyText);
+            let modified = false;
             
-            // Check order status
-            if (orderStatus.data.status !== 'initiated') {
-              console.log(`Order expired or completed (status: ${orderStatus.data.status}), creating new order`);
-              await createNewOrder(true);
-              return;
+            // FORCE the recipient in ALL places it could appear
+            // Direct recipient field
+            if (body.recipient !== destinationAddress) {
+              console.warn(`Correcting recipient in API call: ${body.recipient} → ${destinationAddress}`);
+              body.recipient = destinationAddress;
+              modified = true;
             }
             
-            // Check return address
-            if (orderStatus.data.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-              console.error(`CRITICAL: Order has incorrect return address: ${orderStatus.data.returnAddress}`);
-              await createNewOrder(true);
-              return;
+            // Check for nested recipient
+            if (body.params && body.params.recipient !== destinationAddress) {
+              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${destinationAddress}`);
+              body.params.recipient = destinationAddress;
+              modified = true;
             }
             
-            // Check bank details match currently linked bank
-            const storedBank = localStorage.getItem('linkedBankAccount');
-            if (storedBank) {
-              const bankDetails = JSON.parse(storedBank);
-              const recipient = orderStatus.data.recipient;
-              
-              if (
-                recipient.institution !== bankDetails.institution ||
-                recipient.accountIdentifier !== bankDetails.accountIdentifier
-              ) {
-                console.warn('Bank details mismatch between order and linked bank, creating new order');
-                await createNewOrder(true);
-                return;
+            // Check for parameters.recipient
+            if (body.parameters && body.parameters.recipient !== destinationAddress) {
+              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${destinationAddress}`);
+              body.parameters.recipient = destinationAddress;
+              modified = true;
+            }
+            
+            // Check for user field which sometimes doubles as recipient
+            if (body.parameters && body.parameters.user && body.parameters.user !== destinationAddress) {
+              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${destinationAddress}`);
+              body.parameters.user = destinationAddress;
+              modified = true;
+            }
+            
+            // Check for returnAddress fields (for Paycrest API)
+            if (body.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(body.returnAddress);
+              if (body.returnAddress !== validReturnAddress) {
+                console.warn(`Replacing Solana returnAddress in API call: ${body.returnAddress} → ${validReturnAddress}`);
+                body.returnAddress = validReturnAddress;
+                modified = true;
               }
             }
             
-            // If the order is still valid but it's been over 30 minutes, create a new one anyway
-            if (now - lastOrderTime >= ORDER_REFRESH_INTERVAL) {
-              console.log('Order refresh interval reached, creating new order');
-              await createNewOrder(true);
-              return;
+            // Only replace if modified
+            if (modified) {
+              init.body = JSON.stringify(body);
+            }
+          } catch (err) {
+            console.error("Error parsing/modifying fetch body:", err);
+          }
+        }
+      }
+      
+      // Call original fetch with possibly modified arguments
+      return originalFetch.call(window, input, init);
+    };
+    
+    // Also patch XMLHttpRequest with improved version
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    const originalXHRSend = XMLHttpRequest.prototype.send;
+    
+    XMLHttpRequest.prototype.open = function(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null): void {
+      // Store the URL for later use in send
+      this._relayUrl = url.toString();
+      originalXHROpen.call(this, method, url, async === undefined ? true : async, username, password);
+    };
+    
+    XMLHttpRequest.prototype.send = function(body?: Document | XMLHttpRequestBodyInit | null): void {
+      // Check if this is a relay API call
+      if (this._relayUrl && (
+          this._relayUrl.includes('api.relay') || 
+          this._relayUrl.includes('quote'))) {
+        
+        console.log("Intercepting XHR to:", this._relayUrl);
+        
+        // If it has a body and it's a string, try to modify it
+        if (body && typeof body === 'string') {
+          try {
+            let parsedBody = JSON.parse(body);
+            let modified = false;
+            
+            // FORCE the recipient in ALL places it could appear
+            // Direct recipient field
+            if (parsedBody.recipient !== destinationAddress) {
+              console.warn(`Correcting recipient in XHR: ${parsedBody.recipient} → ${destinationAddress}`);
+              parsedBody.recipient = destinationAddress;
+              modified = true;
             }
             
-            // If we got here, the order is still valid
-            console.log(`Order still valid. Next refresh in ${Math.floor((ORDER_REFRESH_INTERVAL - (now - lastOrderTime)) / 60000)} minutes`);
-          } else {
-            // Failed to verify order status, create new order
-            console.warn('Failed to verify order status, creating new order');
-            await createNewOrder(true);
+            // Check for nested recipient in params
+            if (parsedBody.params && parsedBody.params.recipient !== destinationAddress) {
+              console.warn(`Correcting nested recipient in XHR: ${parsedBody.params.recipient} → ${destinationAddress}`);
+              parsedBody.params.recipient = destinationAddress;
+              modified = true;
+            }
+            
+            // Check for parameters.recipient
+            if (parsedBody.parameters && parsedBody.parameters.recipient !== destinationAddress) {
+              console.warn(`Correcting parameters.recipient in XHR: ${parsedBody.parameters.recipient} → ${destinationAddress}`);
+              parsedBody.parameters.recipient = destinationAddress;
+              modified = true;
+            }
+            
+            // Check for user field
+            if (parsedBody.parameters && parsedBody.parameters.user && parsedBody.parameters.user !== destinationAddress) {
+              console.warn(`Correcting parameters.user in XHR: ${parsedBody.parameters.user} → ${destinationAddress}`);
+              parsedBody.parameters.user = destinationAddress;
+              modified = true;
+            }
+            
+            // Check for returnAddress fields (for Paycrest API)
+            if (parsedBody.returnAddress) {
+              const validReturnAddress = getValidReturnAddress(parsedBody.returnAddress);
+              if (parsedBody.returnAddress !== validReturnAddress) {
+                console.warn(`Replacing Solana returnAddress in XHR: ${parsedBody.returnAddress} → ${validReturnAddress}`);
+                parsedBody.returnAddress = validReturnAddress;
+                modified = true;
+              }
+            }
+            
+            // Replace the body if modified
+            if (modified) {
+              body = JSON.stringify(parsedBody);
+            }
+          } catch (err) {
+            console.error("Error parsing/modifying XHR body:", err);
           }
-        } else if (storedAddress) {
-          // We have an address but no order ID, something's wrong
-          console.warn('Found receive address but no order ID, creating new order');
-          await createNewOrder(true);
-        } else {
-          // No stored order, create a new one
-          console.log('No existing order found, creating new order');
-          await createNewOrder(true);
         }
-      } catch (error) {
-        console.error('Error in periodic order check:', error);
       }
-    };
-
-    // Run check immediately
-    checkAndUpdateOrder();
-
-    // Set up interval to check every minute
-    const interval = setInterval(checkAndUpdateOrder, ORDER_CHECK_INTERVAL);
-    
-    return () => clearInterval(interval);
-  }, []);
-  
-  // Watch for bank account changes
-  useEffect(() => {
-    const checkBankChanges = async () => {
-      const storedBank = localStorage.getItem('linkedBankAccount');
-      if (!storedBank) return;
       
-      const bankDetails = JSON.parse(storedBank);
-      const storedBankInstitution = localStorage.getItem('paycrestBankInstitution');
-      const storedBankAccount = localStorage.getItem('paycrestBankAccount');
+      originalXHRSend.call(this, body);
+    };
+    
+    // Also patch Axios request interceptor for direct modification
+    const axiosRequestInterceptor = axios.interceptors.request.use(config => {
+      // Check if this is a relay API call
+      if (config.url && (config.url.includes('api.relay') || config.url.includes('quote'))) {
+        console.log("Intercepting Axios request to:", config.url);
+        
+        // If it has data, enforce our destination address
+        if (config.data) {
+          let modified = false;
+          
+          // FORCE the recipient in ALL places it could appear
+          // Direct recipient field
+          if (config.data.recipient !== destinationAddress) {
+            console.warn(`Correcting recipient in Axios: ${config.data.recipient} → ${destinationAddress}`);
+            config.data.recipient = destinationAddress;
+            modified = true;
+          }
+          
+          // Check for nested recipient in params
+          if (config.data.params && config.data.params.recipient !== destinationAddress) {
+            console.warn(`Correcting nested params.recipient in Axios: ${config.data.params.recipient} → ${destinationAddress}`);
+            config.data.params.recipient = destinationAddress;
+            modified = true;
+          }
+          
+          // Check for parameters.recipient
+          if (config.data.parameters && config.data.parameters.recipient !== destinationAddress) {
+            console.warn(`Correcting parameters.recipient in Axios: ${config.data.parameters.recipient} → ${destinationAddress}`);
+            config.data.parameters.recipient = destinationAddress;
+            modified = true;
+          }
+          
+          // Check for user field
+          if (config.data.parameters && config.data.parameters.user && config.data.parameters.user !== destinationAddress) {
+            console.warn(`Correcting parameters.user in Axios: ${config.data.parameters.user} → ${destinationAddress}`);
+            config.data.parameters.user = destinationAddress;
+            modified = true;
+          }
+          
+          // Check for returnAddress fields (for Paycrest API)
+          if (config.data.returnAddress) {
+            const validReturnAddress = getValidReturnAddress(config.data.returnAddress);
+            if (config.data.returnAddress !== validReturnAddress) {
+              console.warn(`Replacing Solana returnAddress in Axios: ${config.data.returnAddress} → ${validReturnAddress}`);
+              config.data.returnAddress = validReturnAddress;
+              modified = true;
+            }
+          }
+        }
+      }
       
-      // If bank details don't match the ones used for the current order, create a new order
-      if (
-        !storedBankInstitution || 
-        !storedBankAccount ||
-        bankDetails.institution !== storedBankInstitution ||
-        bankDetails.accountIdentifier !== storedBankAccount
-      ) {
-        console.log('Bank account changed, creating new order with updated bank details');
-        await createNewOrder(true);
-      }
-    };
+      return config;
+    });
     
-    // Check immediately
-    checkBankChanges();
-    
-    // Set up listener for storage events (when bank account is changed)
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'linkedBankAccount') {
-        console.log('Bank account changed in storage, updating order');
-        checkBankChanges();
-      }
-    };
-    
-    window.addEventListener('storage', handleStorageChange);
-    
-    // Also check periodically
-    const interval = setInterval(checkBankChanges, 5000);
-    
+    // Cleanup function
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      clearInterval(interval);
-    };
-  }, []);
-
-  // After swap success, update the widget display
-  useEffect(() => {
-    // Update the quotes whenever the order status changes
-    if (orderStatus === 'valid') {
-      // Slight delay to ensure all state updates have propagated
-      setTimeout(() => {
-        // Trigger an update to refresh display values
-        updateNairaAmount()
-      }, 500)
-    }
-  }, [orderStatus])
-
-  // Define the functions
-  async function handleSwapSuccess() {
-    console.log('Swap successful, creating new order...')
-    
-    // Get bank details from localStorage
-    const storedBank = localStorage.getItem('linkedBankAccount')
-    if (!storedBank) {
-      console.warn('No bank details found, cannot create order after swap')
-      return
-    }
-    
-    try {
-      // Always create a new order after successful swap
-      // This ensures we don't reuse a receive address that's been used already
-      const newAddress = await createNewOrder(true)
-      console.log('New receive address after successful swap:', newAddress)
+      // Restore original fetch
+      window.fetch = originalFetch;
       
-      // If we have a parent success callback, also call it
-      if (onSwapSuccess) {
-        console.log('Calling parent swap success handler with bank details')
-        await onSwapSuccess(JSON.parse(storedBank))
-      }
-    } catch (error) {
-      console.error('Failed to create new order after swap:', error)
-    }
-  }
+      // Restore original XHR methods
+      XMLHttpRequest.prototype.open = originalXHROpen;
+      XMLHttpRequest.prototype.send = originalXHRSend;
+      
+      // Remove Axios interceptor
+      axios.interceptors.request.eject(axiosRequestInterceptor);
+      
+      console.log("Network interceptors removed");
+    };
+  }, [destinationAddress]);
     
     // Function to update Naira amount based on output field
     const updateNairaAmount = () => {
@@ -1073,6 +776,137 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // This helps ensure the address is consistent across the component
     }
   }, [destinationAddress])
+
+  // After swap success, update the widget display
+  useEffect(() => {
+    // Update the quotes whenever the order status changes
+    if (orderStatus === 'valid') {
+      // Slight delay to ensure all state updates have propagated
+      setTimeout(() => {
+        // Trigger an update to refresh display values
+        updateNairaAmount()
+      }, 500)
+    }
+  }, [orderStatus])
+
+  // Define the functions
+  async function handleSwapSuccess() {
+    console.log('Swap successful, creating new order...')
+    
+    // Get bank details from localStorage
+    const storedBank = localStorage.getItem('linkedBankAccount')
+    if (!storedBank) {
+      console.warn('No bank details found, cannot create order after swap')
+      return
+    }
+    
+    try {
+      // Force create new order after successful swap
+      const newAddress = await createNewOrder(true)
+      console.log('New receive address after successful swap:', newAddress)
+      
+      // If we have a parent success callback, also call it
+      if (onSwapSuccess) {
+        console.log('Calling parent swap success handler with bank details')
+        await onSwapSuccess(JSON.parse(storedBank))
+      }
+    } catch (error) {
+      console.error('Failed to create new order after swap:', error)
+    }
+  }
+
+  async function handleWalletConnection(connectorType?: string) {
+    console.log("Wallet connection requested, type:", connectorType);
+    
+    if (!authenticated) {
+      console.log("User not authenticated, initiating login");
+      await login();
+    } else if (connectorType) {
+      console.log("Connecting specific wallet type:", connectorType);
+      if (connectorType.toLowerCase().includes('solana') || 
+          connectorType.toLowerCase().includes('phantom')) {
+        console.log("Connecting Solana wallet");
+        setWalletType('svm');
+      }
+      await linkWallet();
+    } else {
+      console.log("Connecting additional wallet");
+      await linkWallet();
+    }
+  }
+
+  function handleAnalyticEvent(e: any) {
+    if (!e || !e.eventName) return
+
+    console.log('[Widget Event]', e.eventName, e.data)
+
+    // Force update recipient in quote data with actual receive address
+    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
+      const storedReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
+      if (storedReceiveAddress) {
+        console.log(`Setting recipient in quote request to Paycrest receive address:`, storedReceiveAddress);
+        e.data.parameters.recipient = storedReceiveAddress;
+      } else {
+        console.warn('No Paycrest receive address found for quote request');
+      }
+    }
+    
+    // Handle successful swap
+    if (e.eventName === 'SWAP_SUCCESS') {
+      console.log("SWAP_SUCCESS event detected, creating new address")
+      setSwapSuccessOccurred(true)
+      handleSwapSuccess()
+    }
+
+    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
+    if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
+      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
+      setSwapSuccessOccurred(false)
+      
+      setTimeout(() => {
+        if (authenticated && logout) {
+          // Clear local storage
+          localStorage.removeItem('paycrestReceiveAddress')
+          localStorage.removeItem('paycrestOrderId')
+          localStorage.removeItem('paycrestReference')
+          localStorage.removeItem('paycrestValidUntil')
+          localStorage.removeItem('lastOrderTimestamp')
+          
+          // Log the user out
+          logout()
+            .then(() => {
+              console.log('User logged out successfully after swap')
+              window.location.reload()
+            })
+            .catch(err => {
+              console.error('Failed to log out user:', err)
+            })
+        }
+      }, 1000)
+    }
+    
+    // Handle wallet selector events
+    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
+      console.log("Wallet selector triggered:", e.data)
+      if (e.data && e.data.context === 'not_connected') {
+        console.log("Initiating wallet connection flow")
+        
+        if (e.data.wallet_type && 
+            (e.data.wallet_type.toLowerCase().includes('solana') ||
+             e.data.wallet_type.toLowerCase().includes('phantom') ||
+             e.data.wallet_type.toLowerCase().includes('svm'))) {
+          console.log("Setting wallet type to Solana")
+          setWalletType('svm')
+        }
+        
+        handleWalletConnection(e.data.wallet_type)
+      }
+    }
+    
+    // Dispatch custom event for external listeners
+    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
+    window.dispatchEvent(customEvent)
+  }
 
   // Setup event listeners
   useEffect(() => {
@@ -1325,6 +1159,219 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [])
 
+  // Enhanced order management function
+  const createNewOrder = async (forceCreate = false) => {
+    try {
+      // Get bank details from localStorage
+      const storedBank = localStorage.getItem('linkedBankAccount')
+      if (!storedBank) {
+        console.warn('No bank details found, cannot create order')
+        return null
+      }
+      
+      const bankDetails = JSON.parse(storedBank)
+      
+      // Get current time and check if we need a new order
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      
+      // Only check for existing order if not forced to create a new one
+      if (!forceCreate) {
+        // If it hasn't been 30 minutes since the last order was created
+        if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
+          // Check if we already have a valid order
+          const storedAddress = localStorage.getItem('paycrestReceiveAddress')
+          const storedOrderId = localStorage.getItem('paycrestOrderId')
+          
+          if (storedAddress && storedOrderId) {
+            console.log('Using existing valid order:', storedOrderId)
+            setDestinationAddress(storedAddress)
+            return storedAddress
+          }
+        }
+      }
+      
+      // If we reach here, either forceCreate is true or we need a new order
+      console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
+      
+      // Step 1: Get account name and rate in parallel
+      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
+      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
+      
+      try {
+        const [accountNameResponse, nairaRateResponse] = await Promise.all([
+          fetch(verifyAccountEndpoint, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            },
+            body: JSON.stringify({
+              institution: bankDetails.institution,
+              accountIdentifier: bankDetails.accountIdentifier
+            })
+          }),
+          fetch(nairaRateEndpoint, {
+            headers: { 
+              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            }
+          })
+        ])
+        
+        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
+          console.error('Failed to fetch account details or rate')
+          return null
+        }
+        
+        const accountData = await accountNameResponse.json()
+        const rateData = await nairaRateResponse.json()
+        
+        if (!accountData.data || !rateData.data) {
+          console.error('Invalid response from Paycrest API')
+          return null
+        }
+        
+        const accountName = accountData.data?.accountName || "Unknown Account"
+        const rate = rateData.data || DEFAULT_RATE
+        
+        console.log('Account verification successful:', accountName)
+        console.log('Current Naira rate:', rate)
+        
+        // Step 2: Create the order with the correct payload format
+        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
+        
+        // ALWAYS use default address for returnAddress if using Solana wallet
+        let walletAddress = DEFAULT_DESTINATION_ADDRESS;
+        
+        // Only use connected address if it's an EVM wallet
+        if (walletType === 'evm' && connectedAddress && connectedAddress.startsWith('0x')) {
+          console.log('Using connected EVM address for returnAddress:', connectedAddress);
+          walletAddress = connectedAddress;
+        } else {
+          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)');
+        }
+        
+        // Generate a unique reference
+        const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+        
+        // Create order with the required payload format
+        const orderPayload = {
+          amount: 100.00, // Minimum amount for order creation
+          token: "USDC",
+          rate: rate,
+          network: "base", // Using base network for USDC
+          recipient: {
+            institution: bankDetails.institution,
+            accountIdentifier: bankDetails.accountIdentifier,
+            accountName: accountName,
+            memo: "Payment via DirectPay"
+          },
+          returnAddress: walletAddress,
+          reference: reference
+        }
+        
+        console.log('Sending order payload:', orderPayload)
+        
+        const orderResponse = await fetch(createOrderEndpoint, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+          },
+          body: JSON.stringify(orderPayload)
+        })
+        
+        if (!orderResponse.ok) {
+          const errorText = await orderResponse.text()
+          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
+          return null
+        }
+        
+        const orderData = await orderResponse.json()
+        
+        if (!orderData.data) {
+          console.error('Order creation failed:', orderData.message || 'Unknown error')
+          return null
+        }
+        
+        console.log('Order creation successful:', orderData.data)
+        
+        // Save order details
+        localStorage.setItem('paycrestOrderId', orderData.data.id)
+        localStorage.setItem('paycrestReference', reference)
+        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        localStorage.setItem('lastOrderTimestamp', now.toString())
+        
+        // Save and use the new receive address
+        const receiveAddress = orderData.data.receiveAddress
+        if (receiveAddress) {
+          console.log('New receive address generated:', receiveAddress)
+          localStorage.setItem('paycrestReceiveAddress', receiveAddress)
+          setDestinationAddress(receiveAddress)
+          
+          // Save connected wallet address for future use (only if it's an EVM address)
+          if (walletAddress && walletAddress.startsWith('0x')) {
+            localStorage.setItem('connectedWalletAddress', walletAddress)
+          }
+          
+          // Trigger storage event for other components
+          window.dispatchEvent(new StorageEvent('storage', {
+            key: 'paycrestReceiveAddress',
+            newValue: receiveAddress
+          }))
+          
+          // Mark last valid order
+          lastValidOrderRef.current = {
+            address: receiveAddress,
+            timestamp: now
+          }
+          
+          setOrderStatus('valid')
+          return receiveAddress
+        }
+        
+        return null
+      } catch (error) {
+        console.error('API request failed:', error)
+        return null
+      }
+    } catch (error) {
+      console.error('Error creating order:', error)
+      return null
+    }
+  }
+
+  // Periodic order check and refresh - every 30 minutes
+  useEffect(() => {
+    // Create this function outside the effect
+    const checkAndUpdateOrder = () => {
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      
+      // Create new order if:
+      // 1. No last order time (first load)
+      // 2. It's been more than 30 minutes since last order
+      if (lastOrderTime === 0 || now - lastOrderTime >= ORDER_REFRESH_INTERVAL) {
+        console.log('Order expired or missing, creating new order')
+        createNewOrder(true).catch(err => {
+          console.error('Failed to create new order:', err)
+        })
+        } else {
+        // Log time remaining until next refresh
+        const minutesRemaining = Math.floor((ORDER_REFRESH_INTERVAL - (now - lastOrderTime)) / 60000)
+        console.log(`Order still valid. Next refresh in ${minutesRemaining} minutes`)
+      }
+    }
+
+    // Run check immediately
+    checkAndUpdateOrder()
+
+    // Set up interval to check every minute
+    const interval = setInterval(checkAndUpdateOrder, ORDER_CHECK_INTERVAL)
+    
+    return () => clearInterval(interval)
+  }, [lastOrderTime])
+
   // Add this effect to handle wallet balance display
   useEffect(() => {
     if (adaptedWallet && walletType) {
@@ -1347,222 +1394,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     return () => clearInterval(interval);
     }
   }, [adaptedWallet, walletType]);
-  
-  // Enhanced interception for Paycrest API calls
-  useEffect(() => {
-    const originalFetch = window.fetch;
-    
-    // Replace fetch to enforce correct return address for Paycrest
-    window.fetch = async function(...args) {
-      try {
-        const [resource, options] = args;
-        
-        // Check if this is a Paycrest API request
-        if (typeof resource === 'string' && resource.includes('paycrest.io')) {
-          // For all Paycrest requests, ensure the return address is correct
-          if (options && options.method === 'POST' && options.body && typeof options.body === 'string') {
-            try {
-              const body = JSON.parse(options.body);
-              
-              // Always enforce the secure return address for any Paycrest API calls
-              if ('returnAddress' in body && body.returnAddress !== PAYCREST_RETURN_ADDRESS) {
-                console.warn(`SECURITY: Enforcing correct returnAddress in Paycrest API call: ${body.returnAddress} → ${PAYCREST_RETURN_ADDRESS}`);
-                body.returnAddress = PAYCREST_RETURN_ADDRESS;
-                
-                // Create new options with fixed body
-                const newOptions = {
-                  ...options,
-                  body: JSON.stringify(body)
-                };
-                
-                console.log('Secured Paycrest API payload:', body);
-                return originalFetch.apply(this, [resource, newOptions]);
-              }
-              
-              // Log all Paycrest API calls for security auditing
-              console.log('Paycrest API call:', {
-                url: resource,
-                method: options.method,
-                body: typeof body === 'object' ? {...body} : body
-              });
-            } catch (e) {
-              console.error('Error processing Paycrest API call:', e);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error in enhanced Paycrest API interceptor:', error);
-      }
-      
-      return originalFetch.apply(this, args);
-    };
-    
-    return () => {
-      window.fetch = originalFetch;
-    };
-  }, []);
-
-  // Define handleAnalyticEvent function
-  function handleAnalyticEvent(e: any) {
-    if (!e || !e.eventName) return
-
-    console.log('[Widget Event]', e.eventName, e.data)
-
-    // Force update recipient in quote data with actual receive address
-    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
-      const storedReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
-      if (storedReceiveAddress) {
-        console.log(`Setting recipient in quote request to Paycrest receive address:`, storedReceiveAddress);
-        e.data.parameters.recipient = storedReceiveAddress;
-      } else {
-        console.warn('No Paycrest receive address found for quote request');
-      }
-    }
-    
-    // Handle successful swap
-    if (e.eventName === 'SWAP_SUCCESS') {
-      console.log("SWAP_SUCCESS event detected, creating new address")
-      setSwapSuccessOccurred(true)
-      handleSwapSuccess()
-      
-      // Create simplified professional status timeline
-      const timelineElement = document.createElement('div');
-      timelineElement.className = 'order-status-container';
-      timelineElement.innerHTML = `
-        <div class="flex flex-col p-4 my-3 bg-gray-50 rounded-lg border border-gray-200">
-          <div class="flex items-center gap-2 font-medium ${orderStatusStyles.initiated.color}">
-            <span class="text-lg">${orderStatusStyles.initiated.text}</span>
-          </div>
-          <p class="text-sm text-gray-600 mt-1">${messages.initiated}</p>
-        </div>
-      `;
-      
-      // Insert after the swap widget
-      const swapWidget = document.querySelector('.relay-kit');
-      if (swapWidget && swapWidget.parentNode) {
-        swapWidget.parentNode.insertBefore(timelineElement, swapWidget.nextSibling);
-      }
-      
-      // Set up interval to check for status updates
-      const statusCheckInterval = setInterval(async () => {
-        const orderId = localStorage.getItem('paycrestOrderId');
-        if (!orderId) {
-          clearInterval(statusCheckInterval);
-          return;
-        }
-        
-        try {
-          const orderData = await verifyPaycrestOrder(orderId);
-          if (orderData && orderData.data) {
-            const currentStatus = orderData.data.status;
-            
-            // Only update if status has changed to settled or refunded
-            if (currentStatus === 'settled' || currentStatus === 'refunded') {
-              // Update the status display
-              const statusContainer = document.querySelector('.order-status-container');
-              if (statusContainer) {
-                // Use safer direct property access instead of indexing
-                if (currentStatus === 'settled') {
-                  statusContainer.innerHTML = `
-                    <div class="flex flex-col p-4 my-3 bg-gray-50 rounded-lg border border-gray-200">
-                      <div class="flex items-center gap-2 font-medium ${orderStatusStyles.settled.color}">
-                        <span class="text-lg">${orderStatusStyles.settled.text}</span>
-                      </div>
-                      <p class="text-sm text-gray-600 mt-1">${messages.settled}</p>
-                    </div>
-                  `;
-                } else if (currentStatus === 'refunded') {
-                  statusContainer.innerHTML = `
-                    <div class="flex flex-col p-4 my-3 bg-gray-50 rounded-lg border border-gray-200">
-                      <div class="flex items-center gap-2 font-medium ${orderStatusStyles.refunded.color}">
-                        <span class="text-lg">${orderStatusStyles.refunded.text}</span>
-                      </div>
-                      <p class="text-sm text-gray-600 mt-1">${messages.refunded}</p>
-                    </div>
-                  `;
-                }
-              }
-              
-              // Clear the interval once we have a final status
-              clearInterval(statusCheckInterval);
-            }
-          }
-        } catch (error) {
-          console.error('Error checking order status:', error);
-        }
-      }, PAYCREST_STATUS_CHECK_INTERVAL);
-    }
-
-    // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
-    if (e.eventName === 'SWAP_MODAL_CLOSED' && swapSuccessOccurred) {
-      console.log('SWAP_MODAL_CLOSED after SWAP_SUCCESS detected, logging user out')
-      setSwapSuccessOccurred(false)
-      
-      setTimeout(() => {
-        if (authenticated && logout) {
-          // Clear local storage
-          localStorage.removeItem('paycrestReceiveAddress')
-          localStorage.removeItem('paycrestOrderId')
-          localStorage.removeItem('paycrestReference')
-          localStorage.removeItem('paycrestValidUntil')
-          localStorage.removeItem('lastOrderTimestamp')
-          
-          // Log the user out
-          logout()
-            .then(() => {
-              console.log('User logged out successfully after swap')
-              window.location.reload()
-            })
-            .catch(err => {
-              console.error('Failed to log out user:', err)
-            })
-        }
-      }, 1000)
-    }
-    
-    // Handle wallet selector events
-    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
-      console.log("Wallet selector triggered:", e.data)
-      if (e.data && e.data.context === 'not_connected') {
-        console.log("Initiating wallet connection flow")
-        
-        if (e.data.wallet_type && 
-            (e.data.wallet_type.toLowerCase().includes('solana') ||
-             e.data.wallet_type.toLowerCase().includes('phantom') ||
-             e.data.wallet_type.toLowerCase().includes('svm'))) {
-          console.log("Setting wallet type to Solana")
-          setWalletType('svm')
-        }
-        
-        handleWalletConnection(e.data.wallet_type)
-      }
-    }
-    
-    // Dispatch custom event for external listeners
-    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
-    window.dispatchEvent(customEvent)
-  }
-
-  // Define the wallet connection handler
-  async function handleWalletConnection(connectorType?: string) {
-    console.log("Wallet connection requested, type:", connectorType);
-    
-    if (!authenticated) {
-      console.log("User not authenticated, initiating login");
-      await login();
-    } else if (connectorType) {
-      console.log("Connecting specific wallet type:", connectorType);
-      if (connectorType.toLowerCase().includes('solana') || 
-          connectorType.toLowerCase().includes('phantom')) {
-        console.log("Connecting Solana wallet");
-        setWalletType('svm');
-      }
-      await linkWallet();
-    } else {
-      console.log("Connecting additional wallet");
-      await linkWallet();
-    }
-  }
 
   return (
     <div className="swap-page-center">
@@ -1927,87 +1758,6 @@ if (typeof window !== 'undefined') {
       .relay-wallet-option[data-wallet-type*="solflare"] {
         background: linear-gradient(45deg, #9945FF, #14F195) !important;
         border: none !important;
-      }
-      
-      /* Order status styles */
-      .order-status-container {
-        margin: 16px auto;
-        max-width: 400px;
-        font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      }
-      
-      .text-blue-500 {
-        color: #3B82F6;
-      }
-      
-      .text-green-500 {
-        color: #22C55E;
-      }
-      
-      .text-orange-500 {
-        color: #F97316;
-      }
-      
-      .text-gray-600 {
-        color: #4B5563;
-      }
-      
-      .bg-gray-50 {
-        background-color: #F9FAFB;
-      }
-      
-      .border-gray-200 {
-        border-color: #E5E7EB;
-      }
-      
-      .rounded-lg {
-        border-radius: 0.5rem;
-      }
-      
-      .p-4 {
-        padding: 1rem;
-      }
-      
-      .my-3 {
-        margin-top: 0.75rem;
-        margin-bottom: 0.75rem;
-      }
-      
-      .flex {
-        display: flex;
-      }
-      
-      .flex-col {
-        flex-direction: column;
-      }
-      
-      .items-center {
-        align-items: center;
-      }
-      
-      .gap-2 {
-        gap: 0.5rem;
-      }
-      
-      .font-medium {
-        font-weight: 500;
-      }
-      
-      .text-lg {
-        font-size: 1.125rem;
-      }
-      
-      .text-sm {
-        font-size: 0.875rem;
-      }
-      
-      .mt-1 {
-        margin-top: 0.25rem;
-      }
-      
-      .border {
-        border-width: 1px;
-        border-style: solid;
       }
     `;
     document.head.appendChild(style);
