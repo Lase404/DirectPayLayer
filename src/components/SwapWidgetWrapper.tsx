@@ -18,6 +18,9 @@ import { useRelayChains } from '@reservoir0x/relay-kit-hooks'
 import { type WalletClient } from 'viem'
 import { User, Wallet } from '@privy-io/react-auth'
 
+// Define OrderStatus type
+type OrderStatus = 'initiated' | 'settled' | 'refunded' | 'expired';
+
 // Define token type
 interface Token {
   chainId: number
@@ -801,9 +804,67 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
     
     try {
+      const bankDetails = JSON.parse(storedBank)
+      
       // Force create new order after successful swap
       const newAddress = await createNewOrder(true)
       console.log('New receive address after successful swap:', newAddress)
+      
+      // Get the current order ID and details
+      const orderId = localStorage.getItem('paycrestOrderId')
+      if (orderId) {
+        // Create transaction record
+        const transaction: TransactionStatus = {
+          id: orderId,
+          amount: outputValue.toString(),
+          nairaAmount: nairaAmount,
+          bankAccount: `${bankDetails.institution} - ${bankDetails.accountIdentifier}`,
+          status: 'initiated',
+          timestamp: Date.now()
+        }
+        
+        // Update transaction history
+        setTransactionHistory(prev => [...prev, transaction])
+        
+        // Show transaction status
+        setCurrentTransaction(transaction)
+        setShowTransactionStatus(true)
+        
+        // Start polling for status updates
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await checkOrderStatus(orderId)
+            if (status !== 'initiated') {
+              clearInterval(pollInterval)
+              
+              // Update transaction status
+              setTransactionHistory(prev => 
+                prev.map(tx => 
+                  tx.id === orderId 
+                    ? { ...tx, status }
+                    : tx
+                )
+              )
+              
+              // Update current transaction if it's being shown
+              if (currentTransaction?.id === orderId) {
+                setCurrentTransaction(prev => prev ? { ...prev, status } : null)
+              }
+              
+              // If status is not good, create new order
+              if (status !== 'settled') {
+                await createNewOrder(true)
+              }
+            }
+          } catch (error) {
+            console.error('Error polling order status:', error)
+            clearInterval(pollInterval)
+          }
+        }, 5000) // Poll every 5 seconds
+        
+        // Stop polling after 5 minutes
+        setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
+      }
       
       // If we have a parent success callback, also call it
       if (onSwapSuccess) {
@@ -1159,7 +1220,412 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [])
 
-  // Enhanced order management function
+  // Add new interfaces for Paycrest responses
+  interface PaycrestOrderResponse {
+    message: string;
+    status: string;
+    data: {
+      id: string;
+      amount: string;
+      token: string;
+      network: string;
+      receiveAddress: string;
+      validUntil: string;
+      senderFee: string;
+      transactionFee: string;
+      reference: string;
+    }
+  }
+
+  interface PaycrestOrderStatusResponse {
+    message: string;
+    status: string;
+    data: {
+      id: string;
+      amount: string;
+      amountPaid: string;
+      amountReturned: string;
+      token: string;
+      senderFee: string;
+      transactionFee: string;
+      rate: string;
+      network: string;
+      gatewayId: string;
+      reference: string;
+      recipient: {
+        institution: string;
+        accountIdentifier: string;
+        accountName: string;
+        memo: string;
+      };
+      fromAddress: string;
+      returnAddress: string;
+      receiveAddress: string;
+      feeAddress: string;
+      createdAt: string;
+      updatedAt: string;
+      txHash: string;
+      status: 'initiated' | 'settled' | 'refunded' | 'expired';
+      transactions: Array<{
+        id: string;
+        gatewayId: string;
+        status: string;
+        txHash: string;
+        createdAt: string;
+      }>;
+    }
+  }
+
+  // Add new interfaces at the top of the file
+  interface TransactionStatus {
+    id: string;
+    amount: string;
+    nairaAmount: string;
+    bankAccount: string;
+    status: 'initiated' | 'settled' | 'refunded' | 'expired';
+    timestamp: number;
+    txHash?: string;
+  }
+
+  // Add new state for transaction tracking
+  const [transactionHistory, setTransactionHistory] = useState<TransactionStatus[]>([]);
+  const [showTransactionStatus, setShowTransactionStatus] = useState(false);
+  const [currentTransaction, setCurrentTransaction] = useState<TransactionStatus | null>(null);
+
+  // Add the TransactionStatusModal component
+  const TransactionStatusModal = ({ transaction, onClose }: { transaction: TransactionStatus, onClose: () => void }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [lastUpdate, setLastUpdate] = useState(Date.now());
+    const [showHistory, setShowHistory] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
+    
+    // Calculate summary statistics
+    const successfulTransactions = transactionHistory
+      .filter(tx => tx.status === 'settled')
+      .sort((a, b) => b.timestamp - a.timestamp);
+    
+    const totalAmount = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+    const totalNaira = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.nairaAmount), 0);
+    const last30Days = successfulTransactions.filter(tx => 
+      tx.timestamp > Date.now() - 30 * 24 * 60 * 60 * 1000
+    );
+
+    // Filter transactions based on search query and date filter
+    const filteredTransactions = successfulTransactions.filter(tx => {
+      const matchesSearch = 
+        tx.amount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.nairaAmount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.bankAccount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.id.toLowerCase().includes(searchQuery.toLowerCase());
+
+      const now = Date.now();
+      const txDate = tx.timestamp;
+      const matchesDate = 
+        dateFilter === 'all' ? true :
+        dateFilter === 'today' ? txDate > now - 24 * 60 * 60 * 1000 :
+        dateFilter === 'week' ? txDate > now - 7 * 24 * 60 * 60 * 1000 :
+        txDate > now - 30 * 24 * 60 * 60 * 1000;
+
+      return matchesSearch && matchesDate;
+    });
+    
+    // Auto-close timer for completed transactions
+    useEffect(() => {
+      if (transaction.status === 'settled') {
+        const timer = setTimeout(() => {
+          onClose();
+        }, 5000); // Close after 5 seconds for completed transactions
+        return () => clearTimeout(timer);
+      }
+    }, [transaction.status, onClose]);
+
+    // Auto-refresh status every 10 seconds
+    useEffect(() => {
+      const refreshStatus = async () => {
+        if (transaction.status === 'initiated') {
+          try {
+            setIsRefreshing(true);
+            const newStatus = await checkOrderStatus(transaction.id);
+            
+            // Update transaction in history
+            setTransactionHistory(prev => 
+              prev.map(tx => 
+                tx.id === transaction.id 
+                  ? { ...tx, status: newStatus }
+                  : tx
+              )
+            );
+            
+            // Update current transaction if it's being shown
+            if (currentTransaction?.id === transaction.id) {
+              setCurrentTransaction(prev => prev ? { ...prev, status: newStatus } : null);
+            }
+            
+            // If status is refunded, automatically expand the modal
+            if (newStatus === 'refunded') {
+              setIsExpanded(true);
+            }
+            
+            setLastUpdate(Date.now());
+          } catch (err) {
+            console.error('Error refreshing status:', err);
+          } finally {
+            setIsRefreshing(false);
+          }
+        }
+      };
+
+      const interval = setInterval(refreshStatus, 10000);
+      return () => clearInterval(interval);
+    }, [transaction.id, transaction.status]);
+
+    const getStatusColor = (status: string) => {
+      switch (status) {
+        case 'settled': return 'bg-blue-500';
+        case 'refunded': return 'bg-yellow-500';
+        case 'expired': return 'bg-red-500';
+        default: return 'bg-blue-400';
+      }
+    };
+    
+    const getStatusMessage = (status: string) => {
+      switch (status) {
+        case 'settled':
+          return 'Transaction completed successfully!';
+        case 'refunded':
+          return walletType === 'evm' 
+            ? 'Amount has been refunded to your wallet address'
+            : 'Please contact t.me/maxcswap on Telegram for refund assistance';
+        case 'expired':
+          return 'Transaction expired. Please try again.';
+        default:
+          return 'Transaction in progress...';
+      }
+    };
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 transform transition-all duration-300 ease-in-out">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-xl font-semibold text-blue-900">Transaction Status</h3>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <div className="space-y-4">
+            {/* Status Bar */}
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${getStatusColor(transaction.status)}`} />
+              <span className="font-medium text-blue-900">{getStatusMessage(transaction.status)}</span>
+              {isRefreshing && (
+                <div className="ml-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                </div>
+              )}
+            </div>
+            
+            {/* Current Transaction Details */}
+            <div className="border-t pt-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-blue-600">Amount</p>
+                  <p className="font-medium text-blue-900">{transaction.amount} USDC</p>
+                </div>
+                <div>
+                  <p className="text-sm text-blue-600">Naira Value</p>
+                  <p className="font-medium text-blue-900">₦{transaction.nairaAmount}</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <div className="space-x-4">
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  {isExpanded ? 'Show Less' : 'Show More'}
+                </button>
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  {showHistory ? 'Hide History' : 'Show History'}
+                </button>
+              </div>
+              <span className="text-xs text-blue-500">
+                Last updated: {new Date(lastUpdate).toLocaleTimeString()}
+              </span>
+            </div>
+            
+            {/* Expanded Details */}
+            {isExpanded && (
+              <div className="space-y-2 text-sm">
+                <div>
+                  <p className="text-blue-600">Bank Account</p>
+                  <p className="font-medium text-blue-900">{transaction.bankAccount}</p>
+                </div>
+                <div>
+                  <p className="text-blue-600">Transaction ID</p>
+                  <p className="font-medium text-blue-900 break-all">{transaction.id}</p>
+                </div>
+                {transaction.txHash && (
+                  <div>
+                    <p className="text-blue-600">Transaction Hash</p>
+                    <p className="font-medium text-blue-900 break-all">{transaction.txHash}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-blue-600">Time</p>
+                  <p className="font-medium text-blue-900">
+                    {new Date(transaction.timestamp).toLocaleString()}
+                  </p>
+                </div>
+                {transaction.status === 'refunded' && walletType === 'evm' && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-blue-800">
+                      The refunded amount has been sent back to your connected wallet address.
+                    </p>
+                  </div>
+                )}
+                {transaction.status === 'refunded' && walletType === 'svm' && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-blue-800">
+                      Please contact <a href="https://t.me/maxcswap" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800">t.me/maxcswap</a> on Telegram for refund assistance.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Transaction History */}
+            {showHistory && (
+              <div className="mt-4 border-t pt-4">
+                {/* Summary Section */}
+                <div className="mb-6 grid grid-cols-3 gap-4">
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total Transactions</p>
+                    <p className="text-xl font-semibold text-blue-900">{successfulTransactions.length}</p>
+                  </div>
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total USDC</p>
+                    <p className="text-xl font-semibold text-blue-900">{totalAmount.toFixed(2)} USDC</p>
+                  </div>
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total Naira</p>
+                    <p className="text-xl font-semibold text-blue-900">₦{totalNaira.toLocaleString()}</p>
+                  </div>
+                </div>
+
+                {/* Search and Filter Section */}
+                <div className="mb-4 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        placeholder="Search by amount, bank account, or ID..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900 placeholder-blue-300"
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-blue-400 hover:text-blue-600"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    <select
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value as any)}
+                      className="px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900"
+                    >
+                      <option value="all">All Time</option>
+                      <option value="today">Today</option>
+                      <option value="week">Last 7 Days</option>
+                      <option value="month">Last 30 Days</option>
+                    </select>
+                  </div>
+                  {searchQuery && (
+                    <p className="text-sm text-blue-600">
+                      Found {filteredTransactions.length} transactions matching "{searchQuery}"
+                    </p>
+                  )}
+                </div>
+
+                {/* Transaction List */}
+                <div className="space-y-3 max-h-96 overflow-y-auto">
+                  {filteredTransactions.length > 0 ? (
+                    filteredTransactions.map((tx) => (
+                      <div key={tx.id} className="bg-blue-50 rounded-lg p-3 hover:bg-blue-100 transition-colors">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-medium text-blue-900">{tx.amount} USDC</p>
+                            <p className="text-sm text-blue-600">₦{tx.nairaAmount}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm text-blue-600">
+                              {new Date(tx.timestamp).toLocaleDateString()}
+                            </p>
+                            <p className="text-sm text-blue-600">
+                              {new Date(tx.timestamp).toLocaleTimeString()}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-2">
+                          <p className="text-sm text-blue-600 break-all">
+                            Paid to: {tx.bankAccount}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-blue-600 text-center py-4">
+                      {searchQuery ? 'No transactions found matching your search' : 'No successful transactions yet'}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Function to check Paycrest order status
+  async function checkOrderStatus(orderId: string): Promise<OrderStatus> {
+    try {
+      const response = await fetch(`https://api.paycrest.ng/v1/orders/${orderId}/status`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to check order status: ${response.statusText}`)
+      }
+
+      const data = await response.json() as { status: OrderStatus }
+      return data.status
+    } catch (error) {
+      console.error('Error checking order status:', error)
+      throw error
+    }
+  }
+
+  // Update createNewOrder function to use new API key
   const createNewOrder = async (forceCreate = false) => {
     try {
       // Get bank details from localStorage
@@ -1204,7 +1670,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
             method: "POST",
             headers: { 
               "Content-Type": "application/json",
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+              "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
             },
             body: JSON.stringify({
               institution: bankDetails.institution,
@@ -1213,7 +1679,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           }),
           fetch(nairaRateEndpoint, {
             headers: { 
-              "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+              "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
             }
           })
         ])
@@ -1256,7 +1722,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         // Create order with the required payload format
         const orderPayload = {
-          amount: 100.00, // Minimum amount for order creation
+          amount: 0.5, // Minimum amount for order creation
           token: "USDC",
           rate: rate,
           network: "base", // Using base network for USDC
@@ -1276,7 +1742,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            "API-Key": "208a4aef-1320-4222-82b4-e3bca8781b4b"
+            "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
           },
           body: JSON.stringify(orderPayload)
         })
@@ -1287,7 +1753,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           return null
         }
         
-        const orderData = await orderResponse.json()
+        const orderData: PaycrestOrderResponse = await orderResponse.json()
         
         if (!orderData.data) {
           console.error('Order creation failed:', orderData.message || 'Unknown error')
@@ -1296,38 +1762,47 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         console.log('Order creation successful:', orderData.data)
         
-        // Save order details
+        // Store order details including ID
         localStorage.setItem('paycrestOrderId', orderData.data.id)
-        localStorage.setItem('paycrestReference', reference)
+        localStorage.setItem('paycrestReference', orderData.data.reference)
         localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
         localStorage.setItem('lastOrderTimestamp', now.toString())
         
-        // Save and use the new receive address
-        const receiveAddress = orderData.data.receiveAddress
-        if (receiveAddress) {
-          console.log('New receive address generated:', receiveAddress)
-          localStorage.setItem('paycrestReceiveAddress', receiveAddress)
-          setDestinationAddress(receiveAddress)
-          
-          // Save connected wallet address for future use (only if it's an EVM address)
-          if (walletAddress && walletAddress.startsWith('0x')) {
-            localStorage.setItem('connectedWalletAddress', walletAddress)
+        // Check order status immediately
+        const status = await checkOrderStatus(orderData.data.id)
+        
+        // Only use the address if status is initiated
+        if (status === 'initiated') {
+          const receiveAddress = orderData.data.receiveAddress
+          if (receiveAddress) {
+            console.log('New receive address generated:', receiveAddress)
+            localStorage.setItem('paycrestReceiveAddress', receiveAddress)
+            setDestinationAddress(receiveAddress)
+            
+            // Save connected wallet address for future use (only if it's an EVM address)
+            if (walletAddress && walletAddress.startsWith('0x')) {
+              localStorage.setItem('connectedWalletAddress', walletAddress)
+            }
+            
+            // Trigger storage event for other components
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'paycrestReceiveAddress',
+              newValue: receiveAddress
+            }))
+            
+            // Mark last valid order
+            lastValidOrderRef.current = {
+              address: receiveAddress,
+              timestamp: now
+            }
+            
+            setOrderStatus('valid')
+            return receiveAddress
           }
-          
-          // Trigger storage event for other components
-          window.dispatchEvent(new StorageEvent('storage', {
-            key: 'paycrestReceiveAddress',
-            newValue: receiveAddress
-          }))
-          
-          // Mark last valid order
-          lastValidOrderRef.current = {
-            address: receiveAddress,
-            timestamp: now
-          }
-          
-          setOrderStatus('valid')
-          return receiveAddress
+        } else {
+          console.log('Order status not initiated:', status)
+          // Force create a new order since this one is not usable
+          return createNewOrder(true)
         }
         
         return null
@@ -1421,7 +1896,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
                 top: '50%',
                 left: '50%',
                 transform: 'translate(-50%, -50%)',
-                background: 'rgba(0,0,0,0.5)',
+                background: 'rgba(0, 0, 0, 0.5)',
                 color: '#fff',
                 padding: '8px 16px',
                 borderRadius: '8px',
@@ -1543,6 +2018,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           </RelayKitProvider>
         )}
       </div>
+      {showTransactionStatus && currentTransaction && (
+        <TransactionStatusModal
+          transaction={currentTransaction}
+          onClose={() => setShowTransactionStatus(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1720,7 +2201,7 @@ if (typeof window !== 'undefined') {
       }
 
       /* Add spacing after the wallet connection area */
-      .relay-d_flex.relay-items_center.relay-justify_space-between.relay-gap_3.relay-w_100\\% {
+      .relay-d_flex.relay-items_center.relay-justify_space-between.relay-gap_3.relay-w_100\% {
         margin-bottom: 16px;
       }
 
@@ -1733,7 +2214,7 @@ if (typeof window !== 'undefined') {
 
       /* Hide NGN text in rate display */
       .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px:not([data-rate-processed]) {
-        opacity: 0;
+        opacity: 1;
       }
       .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px[data-rate-processed] {
         opacity: 1;
@@ -1758,6 +2239,12 @@ if (typeof window !== 'undefined') {
       .relay-wallet-option[data-wallet-type*="solflare"] {
         background: linear-gradient(45deg, #9945FF, #14F195) !important;
         border: none !important;
+      }
+      
+      /* Fix text color in the swap details section */
+      .relay-kit .relay-text_text-subtle,
+      .relay-kit .relay-text_text-default {
+        color: #000 !important; /* Set text color to black */
       }
     `;
     document.head.appendChild(style);
