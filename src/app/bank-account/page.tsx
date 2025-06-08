@@ -5,7 +5,6 @@ import { BankLinkingForm } from '@/components/BankLinking/BankLinkingForm'
 import SwapWidgetWrapper from '@/components/SwapWidgetWrapper'
 import Image from 'next/image'
 import { usePrivy } from '@privy-io/react-auth'
-import { getBankLogoFromPaycrestCode } from '@/utils/banks'
 
 // Add a constant for the API key
 const PAYCREST_API_KEY = "208a4aef-1320-4222-82b4-e3bca8781b4b";
@@ -17,7 +16,6 @@ export default function BankAccountPage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [userProgress, setUserProgress] = useState<'initial' | 'bank_linked' | 'ready'>('initial')
   const [paycrestOrderId, setPaycrestOrderId] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
 
   // Check for saved bank and order details on mount
   useEffect(() => {
@@ -48,7 +46,7 @@ export default function BankAccountPage() {
     
     // Create a new order when bank is linked
     if (authenticated) {
-      await createNewOrder()
+      await createNewOrder(bank)
       setUserProgress('ready')
     } else {
       setUserProgress('bank_linked')
@@ -56,9 +54,9 @@ export default function BankAccountPage() {
   }
 
   // Create new Paycrest order with bank details
-  const createNewOrder = async () => {
+  const createNewOrder = async (bankData: any) => {
     try {
-      const bank = bankDetails || bankDetails;
+      const bank = bankData || bankDetails;
       if (!bank) return null;
       
       console.log('Creating new Paycrest order with bank details:', bank);
@@ -148,61 +146,28 @@ export default function BankAccountPage() {
           return null;
         }
         
-        const rawText = await orderResponse.text();
-        let orderData;
-        try {
-          orderData = JSON.parse(rawText);
-        } catch (err) {
-          console.error('[FATAL-ORDER-ERROR] Failed to parse API response JSON:', err);
+        const orderData = await orderResponse.json();
+        
+        if (!orderData.data) {
+          console.error('Order creation failed:', orderData.message || 'Unknown error');
           return null;
         }
         
-        const orderId = orderData?.data?.id;
+        console.log('Order creation successful:', orderData.data);
         
-        if (!orderId || typeof orderId !== 'string') {
-          console.error(`[FATAL-ORDER-ERROR] Order ID not found or invalid in response.`);
-          return null;
-        }
-        
-        const receiveAddress = orderData.data.receiveAddress;
-        if (!receiveAddress) {
-          console.error('[FATAL-ORDER-ERROR] receiveAddress not found in response data.');
-          return null;
-        }
-        
-        console.log(`[ORDER-SUCCESS] Storing new order details. ID: ${orderId}, Address: ${receiveAddress}`);
-
-        try {
-            console.log('---SAVE-STEP-1--- Setting paycrestOrderId');
-            localStorage.setItem('paycrestOrderId', orderId);
-            const idCheck1 = localStorage.getItem('paycrestOrderId');
-            console.log(`---SAVE-STEP-1-VERIFY--- ID is now: ${idCheck1}`);
-            if (idCheck1 !== orderId) {
-                console.error("---FATAL-SAVE-ERROR--- ID FAILED TO SAVE ON STEP 1");
-                return null; // Stop execution if this failed
-            }
-
-            console.log('---SAVE-STEP-2--- Setting paycrestReceiveAddress');
-            localStorage.setItem('paycrestReceiveAddress', receiveAddress);
-            const addressCheck1 = localStorage.getItem('paycrestReceiveAddress');
-            console.log(`---SAVE-STEP-2-VERIFY--- Address is now: ${addressCheck1}`);
-            if (addressCheck1 !== receiveAddress) {
-                console.error("---FATAL-SAVE-ERROR--- ADDRESS FAILED TO SAVE ON STEP 2");
-            }
-
-            console.log('---SAVE-STEP-3--- Setting other details');
+        // Save order details
+        localStorage.setItem('paycrestOrderId', orderData.data.id);
         localStorage.setItem('paycrestReference', reference);
         localStorage.setItem('paycrestValidUntil', orderData.data.validUntil);
         localStorage.setItem('lastOrderTimestamp', Date.now().toString());
         
-            console.log('---SAVE-STEP-4--- Calling setPaycrestOrderId (React state)');
-            setPaycrestOrderId(orderId);
-            console.log('---SAVE-COMPLETE---');
-
-        } catch(e) {
-            console.error("---FATAL-SAVE-ERROR--- An exception occurred during the localStorage save process.", e);
-            return null;
-        }
+        setPaycrestOrderId(orderData.data.id);
+        
+        // Save receive address and trigger storage event
+        const receiveAddress = orderData.data.receiveAddress;
+        if (receiveAddress) {
+          console.log('New receive address generated:', receiveAddress);
+          localStorage.setItem('paycrestReceiveAddress', receiveAddress);
           
           // Save connected wallet address for future use
           if (walletAddress && walletAddress !== "0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF") {
@@ -216,6 +181,9 @@ export default function BankAccountPage() {
           }));
           
           return receiveAddress;
+        }
+        
+        return null;
       } catch (error) {
         console.error('API request failed:', error);
         return null;
@@ -223,8 +191,6 @@ export default function BankAccountPage() {
     } catch (error) {
       console.error('Error creating order:', error);
       return null;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -233,7 +199,7 @@ export default function BankAccountPage() {
     
     // If bank is already linked, create order and set to ready
     if (bankDetails) {
-      await createNewOrder()
+      await createNewOrder(bankDetails)
       setUserProgress('ready')
     }
   }
@@ -280,15 +246,9 @@ export default function BankAccountPage() {
                 <div className="bg-gray-50 py-1.5 px-3 rounded-l-lg flex items-center border border-r-0 border-gray-200">
                   <div className="flex items-center">
                     <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
-                    <div className="w-5 h-5 mr-2 flex-shrink-0 bg-white rounded-md border border-gray-100 overflow-hidden">
-                      <Image 
-                        src={getBankLogoFromPaycrestCode(bankDetails.institution)}
-                        alt={bankDetails.institution}
-                        width={20} 
-                        height={20}
-                        className="object-contain"
-                      />
-                    </div>
+                    <svg className="w-4 h-4 text-gray-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                    </svg>
                   </div>
                   <div>
                     <span className="text-sm font-medium text-gray-700">{bankDetails.institution}</span>
@@ -366,15 +326,9 @@ export default function BankAccountPage() {
                   <div className="flex items-center p-2 bg-gray-50 rounded-lg border border-gray-200">
                     <div className="flex items-center">
                       <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
-                      <div className="w-5 h-5 mr-2 flex-shrink-0 bg-white rounded-md border border-gray-100 overflow-hidden">
-                        <Image 
-                          src={getBankLogoFromPaycrestCode(bankDetails.institution)}
-                          alt={bankDetails.institution}
-                          width={20} 
-                          height={20}
-                          className="object-contain"
-                        />
-                      </div>
+                      <svg className="w-4 h-4 text-gray-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                </svg>
               </div>
                     <div>
                       <span className="text-sm font-medium text-gray-700">{bankDetails.institution}</span>

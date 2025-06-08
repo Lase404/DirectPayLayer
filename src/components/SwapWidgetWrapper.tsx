@@ -17,8 +17,6 @@ import '@reservoir0x/relay-kit-ui/styles.css'
 import { useRelayChains } from '@reservoir0x/relay-kit-hooks'
 import { type WalletClient } from 'viem'
 import { User, Wallet } from '@privy-io/react-auth'
-import TransactionStatusModal, { TransactionStatus, BankAccount } from './TransactionStatusModal'
-import { getBankLogo, getBankName } from '@/utils/banks'
 
 // Define OrderStatus type
 type OrderStatus = 'initiated' | 'settled' | 'refunded' | 'expired';
@@ -31,13 +29,6 @@ interface Token {
   name: string
   symbol: string
   logoURI: string
-}
-
-// Add calculateNairaAmount function
-const calculateNairaAmount = (usdcAmount: string, rate: string): string => {
-  const amount = parseFloat(usdcAmount || "0")
-  const nairaRate = parseFloat(rate || "1600")
-  return (amount * nairaRate).toFixed(2)
 }
 
 // Extend XMLHttpRequest type to allow our custom property
@@ -194,7 +185,6 @@ interface PrivyWalletAccount {
   type: string;
   walletClientType?: string;
   address: string;
-  chainType?: string;
 }
 
 interface SolanaWalletInterface {
@@ -210,67 +200,20 @@ interface SwapWidgetWrapperProps {
   onSwapSuccess?: (bankDetails?: any) => Promise<string | null>;
 }
 
-// Predefined functions for Solana wallet handling
-const signSolanaTransaction = async (transaction: Transaction | VersionedTransaction): Promise<Transaction | VersionedTransaction> => {
-  console.log("Signing Solana transaction through Privy");
-  
-  // First try browser wallet extensions directly
-  if (typeof window !== 'undefined') {
-    // Try Solflare first
-    if (window.solflare) {
-      console.log("Found Solflare in window object");
-      try {
-        await window.solflare.connect();
-        const signedTx = await window.solflare.signTransaction(transaction);
-        if (signedTx) return signedTx;
-      } catch (err) {
-        console.error("Error with Solflare wallet:", err);
-      }
-    }
-    
-    // Then try Phantom
-    if (window.phantom?.solana) {
-      console.log("Found Phantom in window object");
-      try {
-        await window.phantom.solana.connect();
-        const signedTx = await window.phantom.solana.signTransaction(transaction);
-        if (signedTx) return signedTx;
-      } catch (err) {
-        console.error("Error with Phantom wallet:", err);
-      }
-    }
-  }
-  
-  // If browser wallets failed, log the error
-  console.error("Browser wallet signing failed and no other signing methods available");
-  throw new Error("Could not sign Solana transaction - no wallet with signing capability found");
-};
-
-const signSolanaAllTransactions = async (transactions: (Transaction | VersionedTransaction)[]): Promise<(Transaction | VersionedTransaction)[]> => {
-  console.log("Signing multiple Solana transactions not implemented");
-  throw new Error("Sign all transactions not implemented");
-};
-
-const signSolanaMessage = async (message: Uint8Array): Promise<Uint8Array> => {
-  console.log("Signing Solana message not implemented");
-  throw new Error("Sign message not implemented");
-};
-
 // Move setupWallet function outside useEffect and component
 export const setupWallet = async (
   ready: boolean,
   user: User | null,
   walletClient: WalletClient | null,
   setAdaptedWallet: (wallet: any) => void,
-  setWalletType: React.Dispatch<React.SetStateAction<'evm' | 'svm' | null>>,
+  setWalletType: (type: string) => void,
   setError: (error: string | null) => void
 ) => {
       if (!ready || !user) return;
       
       try {
-        // Check for EVM wallet from wagmi client
+        // Check for EVM wallet
         if (walletClient) {
-          console.log("Using primary EVM wallet from wagmi client");
       // TODO: Using type assertion due to complex type mismatch between Viem's WalletClient
       // and Reservoir SDK's expected input type. This should be revisited when the SDK
       // provides better TypeScript type definitions.
@@ -287,50 +230,10 @@ export const setupWallet = async (
       wallet: user.wallet
     });
         
-        // Check for wallets in user's linked accounts
+        // Check for Solana wallet in user's linked wallets from Privy
     const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
     console.log("All linked accounts:", linkedAccounts);
 
-        // First look for EVM wallets in linked accounts
-        const evmWallet = linkedAccounts.find(account => 
-          account.type === 'wallet' && 
-          (account.chainType === 'ethereum' || 
-           (account.walletClientType && 
-            (account.walletClientType.toLowerCase().includes('metamask') || 
-             account.walletClientType.toLowerCase().includes('injected') || 
-             account.walletClientType.toLowerCase().includes('walletconnect'))))
-        );
-        
-        if (evmWallet) {
-          console.log("Found EVM wallet in linked accounts, attempting to adapt it directly:", evmWallet);
-          try {
-            // Create a minimal wallet adapter that works with Reservoir
-            const minimalEvmWallet = {
-              // Convert address from property to function
-              address: () => evmWallet.address,
-              chainId: 8453, // Base chain ID
-              // Add basic sign methods
-              signMessage: async ({ message }: { message: string }): Promise<string> => {
-                console.log("Sign message requested for EVM wallet");
-                return '0x' // Placeholder - wagmi should handle actual signing
-              },
-              signTypedData: async (data: any): Promise<string> => {
-                console.log("Sign typed data requested for EVM wallet");
-                return '0x' // Placeholder - wagmi should handle actual signing
-              }
-            };
-            
-            setAdaptedWallet(minimalEvmWallet);
-            setWalletType('evm');
-            console.log("EVM wallet minimally adapted:", minimalEvmWallet);
-            return;
-          } catch (err) {
-            console.error("Error adapting EVM wallet directly:", err);
-            // Fall through to try Solana wallet if EVM fails
-          }
-        }
-
-        // Only try Solana if no EVM wallet was found or EVM failed
     const solanaWallet = linkedAccounts.find(account => {
       console.log("Checking account:", account);
       const isSolana = account.type === 'wallet' && 
@@ -364,9 +267,48 @@ export const setupWallet = async (
         // Use the direct approach with Privy's API to get the wallet client
         const solanaAdaptedWallet = await adaptSolanaWallet({
           publicKey: solanaWallet.address,
-              signTransaction: signSolanaTransaction,
-              signAllTransactions: signSolanaAllTransactions,
-              signMessage: signSolanaMessage
+          signTransaction: async (transaction) => {
+            console.log("Signing Solana transaction through Privy");
+            
+            // First try browser wallet extensions directly
+            if (typeof window !== 'undefined') {
+              // Try Solflare first
+              if (window.solflare) {
+                console.log("Found Solflare in window object");
+                try {
+                  await window.solflare.connect();
+                  const signedTx = await window.solflare.signTransaction(transaction);
+                  if (signedTx) return signedTx;
+                } catch (err) {
+                  console.error("Error with Solflare wallet:", err);
+                }
+              }
+              
+              // Then try Phantom
+              if (window.phantom?.solana) {
+                console.log("Found Phantom in window object");
+                try {
+                  await window.phantom.solana.connect();
+                  const signedTx = await window.phantom.solana.signTransaction(transaction);
+                  if (signedTx) return signedTx;
+                } catch (err) {
+                  console.error("Error with Phantom wallet:", err);
+                }
+              }
+            }
+            
+            // If browser wallets failed, log the error
+            console.error("Browser wallet signing failed and no other signing methods available");
+            throw new Error("Could not sign Solana transaction - no wallet with signing capability found");
+          },
+          signAllTransactions: async (transactions) => {
+            console.log("Signing multiple Solana transactions not implemented");
+            throw new Error("Sign all transactions not implemented");
+          },
+          signMessage: async (message) => {
+            console.log("Signing Solana message not implemented");
+            throw new Error("Sign message not implemented");
+          }
         });
         
         setAdaptedWallet(solanaAdaptedWallet);
@@ -375,8 +317,6 @@ export const setupWallet = async (
         console.error("Error setting up Solana wallet:", err);
         throw err;
       }
-        } else {
-          console.log("No compatible wallets found in user's linked accounts");
     }
       } catch (err) {
         console.error("Error setting up wallet:", err);
@@ -454,25 +394,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   
   // Move setupWallet function outside useEffect
   useEffect(() => {
-    setupWallet(ready, user, walletClient || null, setAdaptedWallet, setWalletType, setError);
+    setupWallet(ready, user, walletClient, setAdaptedWallet, setWalletType, setError);
   }, [ready, user, walletClient]);
-  
-  // Add an effect to handle wallet priority
-  useEffect(() => {
-    // If user exists, log a note about wallet priority
-    if (user && user.linkedAccounts && user.linkedAccounts.length > 1) {
-      console.log("NOTE: For multi-wallet users, EVM wallets are prioritized over Solana wallets");
-      
-      // Log wallet types for debugging
-      const walletTypes = user.linkedAccounts.map((acct: any) => ({
-        address: acct.address?.substring(0, 6) + "...",
-        type: acct.type,
-        client: acct.walletClientType,
-        chainType: acct.chainType
-      }));
-      console.log("Available wallets:", walletTypes);
-    }
-  }, [user]);
   
   // Define tokens outside of render cycle
   const [fromToken, setFromTokenState] = useState<Token | undefined>(undefined);
@@ -870,71 +793,88 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   }, [orderStatus])
 
   // Define the functions
-  const handleSwapSuccess = (quote: any) => {
-    console.log('Swap successful, processing transaction...', quote);
+  async function handleSwapSuccess() {
+    console.log('Swap successful, creating new order...')
     
-    if (!quote || !quote.id) {
-      console.error('No valid quote ID received');
-      return;
+    // Get bank details from localStorage
+    const storedBank = localStorage.getItem('linkedBankAccount')
+    if (!storedBank) {
+      console.warn('No bank details found, cannot create order after swap')
+      return
     }
     
-    // Store quote ID in localStorage for tracking
-    localStorage.setItem('paycrestOrderId', quote.id);
-    console.log('Stored order ID in localStorage:', quote.id);
-    
-    // Create a transaction object with required fields
-    const transaction = {
-      id: quote.id,
-      amount: quote.amount || '0',
-      nairaAmount: calculateNairaAmount(quote.amount.toString(), paycrestRate.toString()),
-      bankAccount: {
-        currency: 'NGN',
-        institution: quote.recipient?.institution || 'Unknown Bank',
-        accountIdentifier: quote.recipient?.accountIdentifier || '',
-        accountName: quote.recipient?.accountName || '',
-        memo: 'DirectPay Offramp'
-      },
-      status: 'initiated' as const,
-      timestamp: Date.now(),
-      token: 'USDC',
-      rate: paycrestRate.toString(),
-      network: 'base'
-    };
-    
-    console.log('Created transaction:', transaction);
-    
-    // Update state
-    setTransactionHistory(prev => [...prev, transaction]);
-    setCurrentTransaction(transaction);
-    setShowTransactionStatus(true);
-    
-    // Start polling for status updates
-    const pollInterval = setInterval(async () => {
-      try {
-        const status = await checkOrderStatus(quote.id);
-        console.log(`Order ${quote.id} status check: ${status}`);
-        
-        if (status !== 'initiated') {
-          console.log(`Order ${quote.id} status changed to ${status}`);
-          clearInterval(pollInterval);
-          
-          // Update transaction history and current transaction
-          setTransactionHistory(prev => 
-            prev.map(tx => tx.id === quote.id ? {...tx, status} : tx)
-          );
-          
-          if (currentTransaction?.id === quote.id) {
-            setCurrentTransaction(prev => prev ? {...prev, status} : null);
-          }
+    try {
+      const bankDetails = JSON.parse(storedBank)
+      
+      // Force create new order after successful swap
+      const newAddress = await createNewOrder(true)
+      console.log('New receive address after successful swap:', newAddress)
+      
+      // Get the current order ID and details
+      const orderId = localStorage.getItem('paycrestOrderId')
+      if (orderId) {
+        // Create transaction record
+        const transaction: TransactionStatus = {
+          id: orderId,
+          amount: outputValue.toString(),
+          nairaAmount: nairaAmount,
+          bankAccount: `${bankDetails.institution} - ${bankDetails.accountIdentifier}`,
+          status: 'initiated',
+          timestamp: Date.now()
         }
-      } catch (error) {
-        console.error('Error polling order status:', error);
+        
+        // Update transaction history
+        setTransactionHistory(prev => [...prev, transaction])
+        
+        // Show transaction status
+        setCurrentTransaction(transaction)
+        setShowTransactionStatus(true)
+        
+        // Start polling for status updates
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await checkOrderStatus(orderId)
+            if (status !== 'initiated') {
+              clearInterval(pollInterval)
+              
+              // Update transaction status
+              setTransactionHistory(prev => 
+                prev.map(tx => 
+                  tx.id === orderId 
+                    ? { ...tx, status }
+                    : tx
+                )
+              )
+              
+              // Update current transaction if it's being shown
+              if (currentTransaction?.id === orderId) {
+                setCurrentTransaction(prev => prev ? { ...prev, status } : null)
+              }
+              
+              // If status is not good, create new order
+              if (status !== 'settled') {
+                await createNewOrder(true)
+              }
+            }
+          } catch (error) {
+            console.error('Error polling order status:', error)
+            clearInterval(pollInterval)
+          }
+        }, 5000) // Poll every 5 seconds
+        
+        // Stop polling after 5 minutes
+        setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
       }
-    }, 5000); // Poll every 5 seconds
-    
-    // Stop polling after 5 minutes
-    setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
-  };
+      
+      // If we have a parent success callback, also call it
+      if (onSwapSuccess) {
+        console.log('Calling parent swap success handler with bank details')
+        await onSwapSuccess(JSON.parse(storedBank))
+      }
+    } catch (error) {
+      console.error('Failed to create new order after swap:', error)
+    }
+  }
 
   async function handleWalletConnection(connectorType?: string) {
     console.log("Wallet connection requested, type:", connectorType);
@@ -972,22 +912,11 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       }
     }
     
-    // Handle successful swap - add extra debugging
+    // Handle successful swap
     if (e.eventName === 'SWAP_SUCCESS') {
-      console.log("SWAP_SUCCESS EVENT DETECTED")
-      console.log("Swap success data:", JSON.stringify(e.data, null, 2))
-      console.log("Creating new Paycrest order after successful swap")
-      
-      // Track that a swap success occurred
+      console.log("SWAP_SUCCESS event detected, creating new address")
       setSwapSuccessOccurred(true)
-      
-      try {
-        // Handle the swap success
-      handleSwapSuccess(e.data)
-        console.log("handleSwapSuccess function called successfully")
-      } catch (err) {
-        console.error("Error in handleSwapSuccess:", err)
-      }
+      handleSwapSuccess()
     }
 
     // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
@@ -1347,289 +1276,576 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }
 
+  // Add new interfaces at the top of the file
+  interface TransactionStatus {
+    id: string;
+    amount: string;
+    nairaAmount: string;
+    bankAccount: string;
+    status: 'initiated' | 'settled' | 'refunded' | 'expired';
+    timestamp: number;
+    txHash?: string;
+  }
+
   // Add new state for transaction tracking
   const [transactionHistory, setTransactionHistory] = useState<TransactionStatus[]>([]);
   const [showTransactionStatus, setShowTransactionStatus] = useState(false);
   const [currentTransaction, setCurrentTransaction] = useState<TransactionStatus | null>(null);
 
+  // Add the TransactionStatusModal component
+  const TransactionStatusModal = ({ transaction, onClose }: { transaction: TransactionStatus, onClose: () => void }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [lastUpdate, setLastUpdate] = useState(Date.now());
+    const [showHistory, setShowHistory] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
+    
+    // Calculate summary statistics
+    const successfulTransactions = transactionHistory
+      .filter(tx => tx.status === 'settled')
+      .sort((a, b) => b.timestamp - a.timestamp);
+    
+    const totalAmount = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+    const totalNaira = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.nairaAmount), 0);
+    const last30Days = successfulTransactions.filter(tx => 
+      tx.timestamp > Date.now() - 30 * 24 * 60 * 60 * 1000
+    );
+
+    // Filter transactions based on search query and date filter
+    const filteredTransactions = successfulTransactions.filter(tx => {
+      const matchesSearch = 
+        tx.amount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.nairaAmount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.bankAccount.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tx.id.toLowerCase().includes(searchQuery.toLowerCase());
+
+      const now = Date.now();
+      const txDate = tx.timestamp;
+      const matchesDate = 
+        dateFilter === 'all' ? true :
+        dateFilter === 'today' ? txDate > now - 24 * 60 * 60 * 1000 :
+        dateFilter === 'week' ? txDate > now - 7 * 24 * 60 * 60 * 1000 :
+        txDate > now - 30 * 24 * 60 * 60 * 1000;
+
+      return matchesSearch && matchesDate;
+    });
+    
+    // Auto-close timer for completed transactions
+    useEffect(() => {
+      if (transaction.status === 'settled') {
+        const timer = setTimeout(() => {
+          onClose();
+        }, 5000); // Close after 5 seconds for completed transactions
+        return () => clearTimeout(timer);
+      }
+    }, [transaction.status, onClose]);
+
+    // Auto-refresh status every 10 seconds
+    useEffect(() => {
+      const refreshStatus = async () => {
+        if (transaction.status === 'initiated') {
+          try {
+            setIsRefreshing(true);
+            const newStatus = await checkOrderStatus(transaction.id);
+            
+            // Update transaction in history
+            setTransactionHistory(prev => 
+              prev.map(tx => 
+                tx.id === transaction.id 
+                  ? { ...tx, status: newStatus }
+                  : tx
+              )
+            );
+            
+            // Update current transaction if it's being shown
+            if (currentTransaction?.id === transaction.id) {
+              setCurrentTransaction(prev => prev ? { ...prev, status: newStatus } : null);
+            }
+            
+            // If status is refunded, automatically expand the modal
+            if (newStatus === 'refunded') {
+              setIsExpanded(true);
+            }
+            
+            setLastUpdate(Date.now());
+      } catch (err) {
+            console.error('Error refreshing status:', err);
+          } finally {
+            setIsRefreshing(false);
+          }
+        }
+      };
+
+      const interval = setInterval(refreshStatus, 10000);
+      return () => clearInterval(interval);
+    }, [transaction.id, transaction.status]);
+
+    const getStatusColor = (status: string) => {
+      switch (status) {
+        case 'settled': return 'bg-blue-500';
+        case 'refunded': return 'bg-yellow-500';
+        case 'expired': return 'bg-red-500';
+        default: return 'bg-blue-400';
+      }
+    };
+    
+    const getStatusMessage = (status: string) => {
+      switch (status) {
+        case 'settled':
+          return 'Transaction completed successfully!';
+        case 'refunded':
+          return walletType === 'evm' 
+            ? 'Amount has been refunded to your wallet address'
+            : 'Please contact t.me/maxcswap on Telegram for refund assistance';
+        case 'expired':
+          return 'Transaction expired. Please try again.';
+        default:
+          return 'Transaction in progress...';
+      }
+    };
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 transform transition-all duration-300 ease-in-out">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-xl font-semibold text-blue-900">Transaction Status</h3>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          <div className="space-y-4">
+            {/* Status Bar */}
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${getStatusColor(transaction.status)}`} />
+              <span className="font-medium text-blue-900">{getStatusMessage(transaction.status)}</span>
+              {isRefreshing && (
+                <div className="ml-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                </div>
+              )}
+            </div>
+            
+            {/* Current Transaction Details */}
+            <div className="border-t pt-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-blue-600">Amount</p>
+                  <p className="font-medium text-blue-900">{transaction.amount} USDC</p>
+                </div>
+                <div>
+                  <p className="text-sm text-blue-600">Naira Value</p>
+                  <p className="font-medium text-blue-900">₦{transaction.nairaAmount}</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <div className="space-x-4">
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  {isExpanded ? 'Show Less' : 'Show More'}
+                </button>
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  {showHistory ? 'Hide History' : 'Show History'}
+                </button>
+              </div>
+              <span className="text-xs text-blue-500">
+                Last updated: {new Date(lastUpdate).toLocaleTimeString()}
+              </span>
+            </div>
+            
+            {/* Expanded Details */}
+            {isExpanded && (
+              <div className="space-y-2 text-sm">
+                <div>
+                  <p className="text-blue-600">Bank Account</p>
+                  <p className="font-medium text-blue-900">{transaction.bankAccount}</p>
+                </div>
+                <div>
+                  <p className="text-blue-600">Transaction ID</p>
+                  <p className="font-medium text-blue-900 break-all">{transaction.id}</p>
+                </div>
+                {transaction.txHash && (
+                  <div>
+                    <p className="text-blue-600">Transaction Hash</p>
+                    <p className="font-medium text-blue-900 break-all">{transaction.txHash}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-blue-600">Time</p>
+                  <p className="font-medium text-blue-900">
+                    {new Date(transaction.timestamp).toLocaleString()}
+                  </p>
+                </div>
+                {transaction.status === 'refunded' && walletType === 'evm' && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-blue-800">
+                      The refunded amount has been sent back to your connected wallet address.
+                    </p>
+                  </div>
+                )}
+                {transaction.status === 'refunded' && walletType === 'svm' && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-blue-800">
+                      Please contact <a href="https://t.me/maxcswap" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800">t.me/maxcswap</a> on Telegram for refund assistance.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Transaction History */}
+            {showHistory && (
+              <div className="mt-4 border-t pt-4">
+                {/* Summary Section */}
+                <div className="mb-6 grid grid-cols-3 gap-4">
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total Transactions</p>
+                    <p className="text-xl font-semibold text-blue-900">{successfulTransactions.length}</p>
+                  </div>
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total USDC</p>
+                    <p className="text-xl font-semibold text-blue-900">{totalAmount.toFixed(2)} USDC</p>
+                  </div>
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-600">Total Naira</p>
+                    <p className="text-xl font-semibold text-blue-900">₦{totalNaira.toLocaleString()}</p>
+                  </div>
+                </div>
+
+                {/* Search and Filter Section */}
+                <div className="mb-4 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        placeholder="Search by amount, bank account, or ID..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900 placeholder-blue-300"
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-blue-400 hover:text-blue-600"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    <select
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value as any)}
+                      className="px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900"
+                    >
+                      <option value="all">All Time</option>
+                      <option value="today">Today</option>
+                      <option value="week">Last 7 Days</option>
+                      <option value="month">Last 30 Days</option>
+                    </select>
+                  </div>
+                  {searchQuery && (
+                    <p className="text-sm text-blue-600">
+                      Found {filteredTransactions.length} transactions matching "{searchQuery}"
+                    </p>
+                  )}
+                </div>
+
+                {/* Transaction List */}
+                <div className="space-y-3 max-h-96 overflow-y-auto">
+                  {filteredTransactions.length > 0 ? (
+                    filteredTransactions.map((tx) => (
+                      <div key={tx.id} className="bg-blue-50 rounded-lg p-3 hover:bg-blue-100 transition-colors">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-medium text-blue-900">{tx.amount} USDC</p>
+                            <p className="text-sm text-blue-600">₦{tx.nairaAmount}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm text-blue-600">
+                              {new Date(tx.timestamp).toLocaleDateString()}
+                            </p>
+                            <p className="text-sm text-blue-600">
+                              {new Date(tx.timestamp).toLocaleTimeString()}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-2">
+                          <p className="text-sm text-blue-600 break-all">
+                            Paid to: {tx.bankAccount}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-blue-600 text-center py-4">
+                      {searchQuery ? 'No transactions found matching your search' : 'No successful transactions yet'}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Function to check Paycrest order status
   async function checkOrderStatus(orderId: string): Promise<OrderStatus> {
     try {
-      console.log(`[ORDER-DEBUG] Checking status for order ID: ${orderId}`);
-      
-      const response = await fetch(`https://api.paycrest.io/v1/sender/orders/${orderId}`, {
+      const response = await fetch(`https://api.paycrest.ng/v1/orders/${orderId}/status`, {
+        method: 'GET',
         headers: {
-          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc'
         }
-      });
-      
-      console.log(`[ORDER-DEBUG] Order status API response code: ${response.status}`);
-      
+      })
+
       if (!response.ok) {
-        console.error(`[ORDER-DEBUG] Failed to fetch order status for ID ${orderId}. Status: ${response.status}`);
-        return 'expired';
+        throw new Error(`Failed to check order status: ${response.statusText}`)
       }
-      
-      // Get raw text first for debugging
-      const rawText = await response.text();
-      console.log(`[ORDER-DEBUG] Raw order status response for ${orderId}:`, rawText);
-      
-      try {
-        const data = JSON.parse(rawText);
-        console.log(`[ORDER-DEBUG] Parsed order status data for ${orderId}:`, JSON.stringify(data));
-        
-        // Try to extract status from various possible locations
-        let orderStatus: OrderStatus = 'expired'; // Default to expired
-        
-        if (data?.data?.status) {
-          orderStatus = data.data.status as OrderStatus;
-          console.log(`[ORDER-DEBUG] Found status in data.data.status (expected location): ${orderStatus}`);
-        } else if (data?.status && data.status !== 'success') {
-          orderStatus = data.status as OrderStatus;
-          console.log(`[ORDER-DEBUG] Found status directly in data.status: ${orderStatus}`);
-        } else if (data?.order?.status) {
-          orderStatus = data.order.status as OrderStatus;
-          console.log(`[ORDER-DEBUG] Found status in data.order.status: ${orderStatus}`);
-        } else {
-          console.error(`[ORDER-DEBUG] Could not find status in expected locations:`, data);
-        }
-        
-        // Validate the status value
-        if (!['initiated', 'settled', 'refunded', 'expired'].includes(orderStatus)) {
-          console.warn(`[ORDER-DEBUG] Invalid order status value: ${orderStatus}, defaulting to 'expired'`);
-          orderStatus = 'expired';
-        }
-        
-        console.log(`[ORDER-DEBUG] Final order ${orderId} status: ${orderStatus}`);
-        return orderStatus;
-      } catch (err) {
-        console.error(`[ORDER-DEBUG] Error parsing order status response for ${orderId}:`, err);
-        return 'expired';
-      }
+
+      const data = await response.json() as { status: OrderStatus }
+      return data.status
     } catch (error) {
-      console.error(`[ORDER-DEBUG] Error checking order ${orderId} status:`, error);
-      return 'expired';
+      console.error('Error checking order status:', error)
+      throw error
     }
   }
 
   // Update createNewOrder function to use new API key
   const createNewOrder = async (forceCreate = false) => {
     try {
-      console.log('=== CREATE ORDER START ===');
-      console.log('Current order state:', {
-        paycrestOrderId: localStorage.getItem('paycrestOrderId'),
-        paycrestReceiveAddress: localStorage.getItem('paycrestReceiveAddress'),
-        orderStatus: localStorage.getItem('orderStatus')
-      });
-
-      // Check if we already have a valid order
-      const existingOrderId = localStorage.getItem('paycrestOrderId');
-      const existingReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
-      const orderStatus = localStorage.getItem('orderStatus') as OrderStatus | null;
-
-      console.log('Existing order check:', {
-        existingOrderId,
-        existingReceiveAddress,
-        orderStatus,
-        forceCreate
-      });
-
-      if (!forceCreate && existingOrderId && existingReceiveAddress && orderStatus === 'initiated') {
-        console.log('Using existing order:', existingOrderId);
-        return;
+      // Get bank details from localStorage
+      const storedBank = localStorage.getItem('linkedBankAccount')
+      if (!storedBank) {
+        console.warn('No bank details found, cannot create order')
+        return null
       }
-
-      // Clear any existing order data
-      console.log('Clearing existing order data');
-      localStorage.removeItem('paycrestOrderId');
-      localStorage.removeItem('paycrestReceiveAddress');
-      localStorage.removeItem('orderStatus');
-
-      // Get current wallet address
-      const currentAddress = adaptedWallet?.address;
-      console.log('Current wallet address:', currentAddress);
-
-      if (!currentAddress) {
-        throw new Error('No wallet address available');
+      
+      const bankDetails = JSON.parse(storedBank)
+      
+      // Get current time and check if we need a new order
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      
+      // Only check for existing order if not forced to create a new one
+      if (!forceCreate) {
+        // If it hasn't been 30 minutes since the last order was created
+        if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
+          // Check if we already have a valid order
+          const storedAddress = localStorage.getItem('paycrestReceiveAddress')
+          const storedOrderId = localStorage.getItem('paycrestOrderId')
+          
+          if (storedAddress && storedOrderId) {
+            console.log('Using existing valid order:', storedOrderId)
+            setDestinationAddress(storedAddress)
+            return storedAddress
+          }
+        }
       }
-
-      // Get valid return address
-      const returnAddress = getValidReturnAddress(currentAddress, true);
-      console.log('Return address:', returnAddress);
-
-      // Prepare order data
-      const orderData = {
-        amount: nairaAmount,
-        token: 'USDT',
-        network: walletType === 'evm' ? 'ethereum' : 'solana',
-        returnAddress: returnAddress
-      };
-      console.log('Order data:', orderData);
-
-      // Create new order
-      console.log('Creating new order...');
-      const response = await fetch('/api/paycrest/create-order', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(orderData),
-      });
-
-      console.log('Raw API Response:', await response.clone().text());
-      const data = await response.json();
-      console.log('=== API RESPONSE ===');
-      console.log('Full response:', data);
-      console.log('Order ID:', data.data?.id);
-      console.log('Receive Address:', data.data?.receiveAddress);
-
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to create order');
+      
+      // If we reach here, either forceCreate is true or we need a new order
+      console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
+      
+      // Step 1: Get account name and rate in parallel
+      const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
+      const nairaRateEndpoint = "https://api.paycrest.io/v1/rates/usdc/1/ngn"
+      
+      try {
+        const [accountNameResponse, nairaRateResponse] = await Promise.all([
+          fetch(verifyAccountEndpoint, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
+            },
+            body: JSON.stringify({
+              institution: bankDetails.institution,
+              accountIdentifier: bankDetails.accountIdentifier
+            })
+          }),
+          fetch(nairaRateEndpoint, {
+            headers: { 
+              "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
+            }
+          })
+        ])
+        
+        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
+          console.error('Failed to fetch account details or rate')
+          return null
+        }
+        
+        const accountData = await accountNameResponse.json()
+        const rateData = await nairaRateResponse.json()
+        
+        if (!accountData.data || !rateData.data) {
+          console.error('Invalid response from Paycrest API')
+          return null
+        }
+        
+        const accountName = accountData.data?.accountName || "Unknown Account"
+        const rate = rateData.data || DEFAULT_RATE
+        
+        console.log('Account verification successful:', accountName)
+        console.log('Current Naira rate:', rate)
+        
+        // Step 2: Create the order with the correct payload format
+        const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
+        
+        // ALWAYS use default address for returnAddress if using Solana wallet
+        let walletAddress = DEFAULT_DESTINATION_ADDRESS;
+        
+        // Only use connected address if it's an EVM wallet
+        if (walletType === 'evm' && connectedAddress && connectedAddress.startsWith('0x')) {
+          console.log('Using connected EVM address for returnAddress:', connectedAddress);
+          walletAddress = connectedAddress;
+        } else {
+          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)');
+        }
+        
+        // Generate a unique reference
+        const reference = `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+        
+        // Create order with the required payload format
+        const orderPayload = {
+          amount: 0.5, // Minimum amount for order creation
+          token: "USDC",
+          rate: rate,
+          network: "base", // Using base network for USDC
+          recipient: {
+            institution: bankDetails.institution,
+            accountIdentifier: bankDetails.accountIdentifier,
+            accountName: accountName,
+            memo: "Payment via DirectPay"
+          },
+          returnAddress: walletAddress,
+          reference: reference
+        }
+        
+        console.log('Sending order payload:', orderPayload)
+        
+        const orderResponse = await fetch(createOrderEndpoint, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "API-Key": "7f7d8575-be32-4598-b6a2-43801fe173dc"
+          },
+          body: JSON.stringify(orderPayload)
+        })
+        
+        if (!orderResponse.ok) {
+          const errorText = await orderResponse.text()
+          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
+          return null
+        }
+        
+        const orderData: PaycrestOrderResponse = await orderResponse.json()
+        
+        if (!orderData.data) {
+          console.error('Order creation failed:', orderData.message || 'Unknown error')
+          return null
+        }
+        
+        console.log('Order creation successful:', orderData.data)
+        
+        // Store order details including ID
+        localStorage.setItem('paycrestOrderId', orderData.data.id)
+        localStorage.setItem('paycrestReference', orderData.data.reference)
+        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        localStorage.setItem('lastOrderTimestamp', now.toString())
+        
+        // Check order status immediately
+        const status = await checkOrderStatus(orderData.data.id)
+        
+        // Only use the address if status is initiated
+        if (status === 'initiated') {
+          const receiveAddress = orderData.data.receiveAddress
+          if (receiveAddress) {
+            console.log('New receive address generated:', receiveAddress)
+            localStorage.setItem('paycrestReceiveAddress', receiveAddress)
+            setDestinationAddress(receiveAddress)
+            
+            // Save connected wallet address for future use (only if it's an EVM address)
+            if (walletAddress && walletAddress.startsWith('0x')) {
+              localStorage.setItem('connectedWalletAddress', walletAddress)
+            }
+            
+            // Trigger storage event for other components
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'paycrestReceiveAddress',
+              newValue: receiveAddress
+            }))
+            
+            // Mark last valid order
+            lastValidOrderRef.current = {
+              address: receiveAddress,
+              timestamp: now
+            }
+            
+            setOrderStatus('valid')
+            return receiveAddress
+          }
+        } else {
+          console.log('Order status not initiated:', status)
+          // Force create a new order since this one is not usable
+          return createNewOrder(true)
+        }
+        
+        return null
+      } catch (error) {
+        console.error('API request failed:', error)
+        return null
       }
-
-      if (!data.data?.id) {
-        console.error('No order ID in response:', data);
-        throw new Error('No order ID in response');
-      }
-
-      // Save order data
-      localStorage.setItem('paycrestOrderId', data.data.id);
-      localStorage.setItem('paycrestReceiveAddress', data.data.receiveAddress);
-      localStorage.setItem('orderStatus', 'initiated');
-
-      console.log('=== SAVED ORDER DATA ===');
-      console.log('Saved Order ID:', localStorage.getItem('paycrestOrderId'));
-      console.log('Saved Receive Address:', localStorage.getItem('paycrestReceiveAddress'));
-      console.log('Saved Status:', localStorage.getItem('orderStatus'));
-
-      return data.data;
-    } catch (error: unknown) {
-      console.error('=== CREATE ORDER ERROR ===', error);
-      if (error instanceof Error) {
-        setError(error.message);
-      } else {
-        setError('An unknown error occurred');
-      }
-      throw error;
+    } catch (error) {
+      console.error('Error creating order:', error)
+      return null
     }
-  };
+  }
 
   // Periodic order check and refresh - every 30 minutes
   useEffect(() => {
-    // Check for existing order ID on mount
-    const storedOrderId = localStorage.getItem('paycrestOrderId');
-    const storedAddress = localStorage.getItem('paycrestReceiveAddress');
-    const storedTimestamp = localStorage.getItem('lastOrderTimestamp');
-    
-    console.log('[ORDER-DEBUG] INITIALIZATION - Stored order data:', { 
-      orderId: storedOrderId, 
-      address: storedAddress,
-      timestamp: storedTimestamp ? new Date(parseInt(storedTimestamp)).toLocaleString() : 'none'
-    });
-    
-    if (storedOrderId && storedAddress) {
-      console.log(`[ORDER-DEBUG] Found existing order ID ${storedOrderId} with address ${storedAddress}`);
-      setDestinationAddress(storedAddress);
-      setOrderStatus('valid');
-      if (storedTimestamp) {
-        setLastOrderTime(parseInt(storedTimestamp));
-      }
-    } else {
-      console.log('[ORDER-DEBUG] No valid existing order found, will create new one');
-    }
-
     // Create this function outside the effect
-    const checkAndUpdateOrder = async () => {
-      const now = Date.now();
-      
-      // Get current stored values each time we check to ensure we have latest data
-      const currentOrderId = localStorage.getItem('paycrestOrderId');
-      const currentTimestamp = parseInt(localStorage.getItem('lastOrderTimestamp') || '0');
-      const currentAddress = localStorage.getItem('paycrestReceiveAddress');
-      
-      console.log(`[ORDER-DEBUG] Order check cycle - Current order state:`, {
-        orderID: currentOrderId || 'none',
-        address: currentAddress || 'none',
-        lastUpdate: new Date(currentTimestamp).toLocaleString(),
-        minutesAgo: Math.floor((now - currentTimestamp) / 60000),
-        expireThreshold: Math.floor(ORDER_REFRESH_INTERVAL / 60000) + ' minutes'
-      });
+    const checkAndUpdateOrder = () => {
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
       
       // Create new order if:
-      // 1. No order ID (first load or cleared storage)
+      // 1. No last order time (first load)
       // 2. It's been more than 30 minutes since last order
-      if (!currentOrderId || (now - currentTimestamp >= ORDER_REFRESH_INTERVAL)) {
-        console.log(`[ORDER-DEBUG] ${currentOrderId ? `Order ${currentOrderId} expired` : 'No order ID found'}, creating new order. Last update: ${new Date(currentTimestamp).toLocaleTimeString()}`);
-        
-        try {
-          // Force create a new order and wait for the result
-          const result = await createNewOrder(true);
-          if (result) {
-            console.log(`[ORDER-DEBUG] Successfully created new order with address: ${result}`);
-            
-            // Verify the new order ID is stored
-            const newOrderId = localStorage.getItem('paycrestOrderId');
-            console.log(`[ORDER-DEBUG] New order ID stored: ${newOrderId || 'FAILED'}`);
-            
-            if (!newOrderId) {
-              console.error('[ORDER-DEBUG] Failed to store new order ID in localStorage!');
-              // Check if localStorage is working
-              try {
-                localStorage.setItem('test-localStorage', 'test');
-                const testValue = localStorage.getItem('test-localStorage');
-                console.log(`[ORDER-DEBUG] LocalStorage test: ${testValue === 'test' ? 'WORKING' : 'FAILED'}`);
-                localStorage.removeItem('test-localStorage');
-              } catch (storageError) {
-                console.error('[ORDER-DEBUG] LocalStorage test failed:', storageError);
-              }
-            }
-          } else {
-            console.error('[ORDER-DEBUG] Failed to create new order - no address returned');
-          }
-        } catch (err) {
-          console.error('[ORDER-DEBUG] Error creating new order:', err);
-        }
+      if (lastOrderTime === 0 || now - lastOrderTime >= ORDER_REFRESH_INTERVAL) {
+        console.log('Order expired or missing, creating new order')
+        createNewOrder(true).catch(err => {
+          console.error('Failed to create new order:', err)
+        })
         } else {
         // Log time remaining until next refresh
-        const minutesRemaining = Math.floor((ORDER_REFRESH_INTERVAL - (now - currentTimestamp)) / 60000);
-        console.log(`[ORDER-DEBUG] Order ${currentOrderId} still valid. Next refresh in ${minutesRemaining} minutes (${new Date(currentTimestamp + ORDER_REFRESH_INTERVAL).toLocaleTimeString()})`);
-        
-        // Check if the order is still valid by querying status
-        try {
-          console.log(`[ORDER-DEBUG] Verifying order status for ID ${currentOrderId}...`);
-          const currentStatus = await checkOrderStatus(currentOrderId);
-          console.log(`[ORDER-DEBUG] Current status for order ${currentOrderId}: ${currentStatus}`);
-          
-          if (currentStatus !== 'initiated') {
-            console.log(`[ORDER-DEBUG] Order ${currentOrderId} status is ${currentStatus}, needs replacement`);
-            const result = await createNewOrder(true);
-            if (result) {
-              console.log(`[ORDER-DEBUG] Successfully replaced order with new address: ${result}`);
-            }
-          }
-        } catch (statusError) {
-          console.error(`[ORDER-DEBUG] Error checking current order status:`, statusError);
-        }
+        const minutesRemaining = Math.floor((ORDER_REFRESH_INTERVAL - (now - lastOrderTime)) / 60000)
+        console.log(`Order still valid. Next refresh in ${minutesRemaining} minutes`)
       }
-    };
+    }
 
     // Run check immediately
-    console.log('[ORDER-DEBUG] Running initial order check...');
-    checkAndUpdateOrder();
+    checkAndUpdateOrder()
 
     // Set up interval to check every minute
-    console.log(`[ORDER-DEBUG] Setting up order check interval (every ${ORDER_CHECK_INTERVAL/1000} seconds)`);
-    const interval = setInterval(() => {
-      console.log('[ORDER-DEBUG] Running periodic order check...');
-      checkAndUpdateOrder();
-    }, ORDER_CHECK_INTERVAL);
+    const interval = setInterval(checkAndUpdateOrder, ORDER_CHECK_INTERVAL)
     
-    return () => {
-      console.log('[ORDER-DEBUG] Cleaning up order check interval');
-      clearInterval(interval);
-    };
-  }, []); // Remove lastOrderTime dependency to avoid re-running this effect
+    return () => clearInterval(interval)
+  }, [lastOrderTime])
 
   // Add this effect to handle wallet balance display
   useEffect(() => {
@@ -1653,45 +1869,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     return () => clearInterval(interval);
     }
   }, [adaptedWallet, walletType]);
-
-  // Add useEffect to load transaction history from localStorage on mount
-  useEffect(() => {
-    try {
-      const storedHistory = localStorage.getItem('transactionHistory');
-      if (storedHistory) {
-        const parsedHistory = JSON.parse(storedHistory);
-        if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
-          console.log('Loaded transaction history from localStorage:', parsedHistory.length, 'transactions');
-          setTransactionHistory(parsedHistory);
-        }
-      }
-      
-      // Check for active transactions and resume polling if needed
-      const activeTransactions = localStorage.getItem('activeTransactions');
-      if (activeTransactions) {
-        try {
-          const parsedActive = JSON.parse(activeTransactions);
-          if (Array.isArray(parsedActive) && parsedActive.length > 0) {
-            // Resume polling for any active transactions
-            parsedActive.forEach((orderId) => {
-              console.log('Resuming status check for order:', orderId);
-              // Implementation of resume polling...
-            });
-          }
-        } catch (e) {
-          console.error('Failed to parse active transactions:', e);
-        }
-      }
-      
-      // Check if there's a stored order ID
-      const storedOrderId = localStorage.getItem('paycrestOrderId');
-      if (storedOrderId) {
-        console.log('Found stored order ID:', storedOrderId);
-      }
-    } catch (e) {
-      console.error('Error loading transaction history:', e);
-    }
-  }, []);
 
   return (
     <div className="swap-page-center">
@@ -1746,7 +1923,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               wallet={adaptedWallet}
               onAnalyticEvent={handleAnalyticEvent}
               slippageTolerance={slippageTolerance}
-              onSwapSuccess={handleSwapSuccess}
             />
             
             {/* Move slippage config to bottom */}
@@ -1846,8 +2022,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         <TransactionStatusModal
           transaction={currentTransaction}
           onClose={() => setShowTransactionStatus(false)}
-          transactions={transactionHistory}
-          showHistory={true}
         />
       )}
     </div>
