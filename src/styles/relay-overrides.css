@@ -1,0 +1,230 @@
+/* Custom styling for the Relay Kit UI */
+
+/* Change "Buy" to "Receive" */
+.relay-kit h1 span:first-child,
+.relay-kit button[type="submit"] span {
+  display: none !important;
+}
+
+.relay-kit h1::before {
+  content: 'Receive' !important;
+  font-weight: 600;
+}
+
+.relay-kit button[type="submit"]::after {
+  content: 'Receive NGN' !important;
+}
+
+/* Hide Naira symbols in token selection modal */
+[role="dialog"] .relay-d_flex .relay-flex_col span:nth-child(2),
+[role="dialog"] .relay-d_flex span:has(+ span:empty),
+[role="dialog"] .relay-d_flex span:empty,
+[role="dialog"] .relay-d_flex span:contains("₦"),
+[role="dialog"] .relay-d_flex span:contains("NGN") {
+  display: none !important;
+}
+
+/* Only show token symbols in selection modal */
+[role="dialog"] .relay-d_flex .relay-flex_col span:first-child {
+  font-size: 14px !important;
+}
+
+/* Styling for token display in main widget */
+.relay-kit .to-token-section .token-name,
+.relay-kit .to-token-section .token-symbol {
+  color: #00A551 !important;
+}
+
+/* Additional UI modifications */
+.relay-kit .to-token-section .token-info {
+  background-color: rgba(0, 165, 81, 0.1) !important;
+  border: 1px solid rgba(0, 165, 81, 0.3) !important;
+}
+
+/* Hide USD values only in specific sections */
+.relay-kit .to-token-section .usd-value,
+.relay-kit .to-token-section .rate-display,
+.relay-kit .to-token-section [class*="PriceInfo"],
+.relay-kit .to-token-section [class*="price-info"],
+.relay-kit .to-token-section [class*="price-container"] {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  position: relative !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Add spacing for our custom Naira overlay */
+.relay-kit .to-token-section {
+  position: relative !important;
+}
+
+/* Dark theme overrides for proper contrast */
+.relay-kit .dark-mode {
+  background-color: #181818 !important;
+}
+
+/* Target specific USD amount sections */
+.relay-kit .to-token-section .relay-text_text-subtle-secondary {
+  visibility: hidden !important;
+  position: relative !important;
+}
+
+/* Target specific price display in the TO section */
+.relay-kit .to-token-section .relay-d_flex.relay-items_center.relay-gap_1.relay-min-h_18 {
+  visibility: hidden !important;
+  position: relative !important;
+}
+
+/* Target specific rate display */
+.relay-kit #fee-breakdown-section .relay-text_text-default {
+  visibility: hidden !important; 
+  position: relative !important;
+}
+
+/* Style Naira value display only in output field */
+.relay-kit .to-token-section input[data-naira="true"] {
+  font-size: 32px !important;
+  font-weight: bold !important;
+  color: black !important;
+  background: transparent !important;
+  visibility: visible !important;
+}
+
+/* Relay Kit Theme Overrides */
+.relay-theme-light {
+  --relay-txt-default: rgb(15, 19, 24);
+  --relay-bg-active: rgb(232, 244, 238);
+  --relay-bg-dropdown: rgba(227, 233, 255, 0.20);
+  --relay-bg-input: white;
+  --relay-bg-input-selected: white;
+  --relay-bg-interactive: white;
+  --relay-bg-loader: rgb(232, 244, 238);
+  --relay-bg-page: white;
+  --relay-bg-tooltip: white;
+  --relay-border-default: rgb(232, 244, 238);
+  --relay-border-interactive-default: rgb(232, 244, 238);
+  --relay-border-interactive-focus: rgb(23, 188, 111);
+  --relay-border-alert: rgba(247, 202, 24, 0.4);
+  --relay-border-error: rgb(255, 95, 95);
+  --relay-txt-input-placeholder: rgba(15, 19, 24, 0.6);
+  --relay-txt-input-value: rgb(15, 19, 24);
+  --relay-txt-secondary: rgba(15, 19, 24, 0.6);
+  --relay-txt-interactive-default: rgb(23, 188, 111);
+  --relay-txt-interactive-hover: rgb(17, 160, 93);
+  --relay-txt-alert: rgb(237, 155, 17);
+  --relay-txt-error: rgb(255, 95, 95);
+  --relay-txt-app-accent: rgb(23, 188, 111);
+  --relay-shadow-app: 0px 4px 30px 0px rgba(0, 0, 0, 0.05);
+  --relay-shadow-tooltip: 0px 4px 6px 0px rgba(0, 0, 0, 0.05);
+}
+
+.relay-theme-dark {
+  --relay-txt-default: white;
+  --relay-bg-active: rgb(40, 82, 63);
+  --relay-bg-dropdown: rgba(227, 233, 255, 0.05);
+  --relay-bg-input: rgb(27, 32, 40);
+  --relay-bg-input-selected: rgb(27, 32, 40);
+  --relay-bg-interactive: rgb(27, 32, 40);
+  --relay-bg-loader: rgb(40, 82, 63);
+  --relay-bg-page: rgb(19, 22, 28);
+  --relay-bg-tooltip: rgb(27, 32, 40);
+  --relay-border-default: rgb(40, 82, 63);
+  --relay-border-interactive-default: rgb(40, 82, 63);
+  --relay-border-interactive-focus: rgb(23, 188, 111);
+  --relay-border-alert: rgba(247, 202, 24, 0.4);
+  --relay-border-error: rgb(255, 95, 95);
+  --relay-txt-input-placeholder: rgba(255, 255, 255, 0.6);
+  --relay-txt-input-value: white;
+  --relay-txt-secondary: rgba(255, 255, 255, 0.6);
+  --relay-txt-interactive-default: rgb(23, 188, 111);
+  --relay-txt-interactive-hover: rgb(17, 160, 93);
+  --relay-txt-alert: rgb(237, 155, 17);
+  --relay-txt-error: rgb(255, 95, 95);
+  --relay-txt-app-accent: rgb(23, 188, 111);
+  --relay-shadow-app: 0px 4px 30px 0px rgba(0, 0, 0, 0.2);
+  --relay-shadow-tooltip: 0px 4px 6px 0px rgba(0, 0, 0, 0.2);
+}
+
+/* Force "Buy" to "Receive" */
+.relay-kit button[type="submit"] span,
+.relay-kit button span:contains("Buy"),
+.relay-button span:contains("Buy"),
+button.relay-button span {
+  font-size: 0 !important;
+}
+
+.relay-kit button[type="submit"] span::after,
+.relay-kit button span:contains("Buy")::after,
+.relay-button span:contains("Buy")::after,
+button.relay-button span::after {
+  content: "Receive" !important;
+  font-size: 16px !important;
+  visibility: visible !important;
+  display: inline-block !important;
+}
+
+/* Floating Naira Value Display */
+#naira-floating-display {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+  animation: fadeIn 0.3s ease-in-out !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Hide USD values */
+.relay-d_flex.relay-items_center.relay-gap_1.relay-min-h_18 {
+  opacity: 0;
+  position: relative;
+  height: 18px;
+}
+
+#fee-breakdown-section .relay-flex {
+  opacity: 0;
+  position: relative;
+  height: 24px;
+}
+
+/* Fix for token selection */
+.relay-d_flex.relay-items_center.relay-justify_end {
+  min-width: 100px;
+}
+
+/* Hide these specific classes related to USD display */
+[class*="TokenValueInput_usdValue"] {
+  display: none !important;
+}
+
+/* Override for the rate display (1 USDC = $...) */
+#fee-breakdown-section .relay-flex {
+  opacity: 0;
+}
+
+/* Make Naira value look native */
+input.naira-value {
+  position: relative !important;
+}
+
+/* For the input field with Naira value */
+.relay-d_flex:has(input.naira-value) {
+  position: relative !important;
+}
+
+/* DEV MODE: Hide output field unless it has .naira-value */
+body.dev-mode input[type="text"][inputmode="decimal"]:nth-of-type(2):not(.naira-value) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.1s linear;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+body.dev-mode input[type="text"][inputmode="decimal"].naira-value {
+  opacity: 1 !important;
+  transition: opacity 0.1s linear;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}

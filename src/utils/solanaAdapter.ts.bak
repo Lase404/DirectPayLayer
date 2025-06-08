@@ -1,0 +1,325 @@
+import {
+  AddressLookupTableAccount,
+  Connection,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction
+} from '@solana/web3.js'
+import { getClient } from '@reservoir0x/relay-sdk'
+import {
+  signWithBrowserWallet,
+  signAllWithBrowserWallet,
+  signMessageWithBrowserWallet,
+  sendTransactionWithBrowserWallet
+} from './browserWallets'
+
+// Define types from relay-sdk since they're not exported
+interface SignatureStepItem {
+  data: {
+    sign?: {
+      message: string;
+      signatureKind?: 'eip191' | 'eip712';
+    };
+    post?: {
+      body: any;
+      method: string;
+      endpoint: string;
+    };
+  };
+}
+
+interface TransactionStepItem {
+  data: {
+    instructions: Array<{
+      keys: Array<{
+        isSigner: boolean;
+        isWritable: boolean;
+        pubkey: string;
+      }>;
+      programId: string;
+      data: string;
+    }>;
+    addressLookupTableAddresses?: string[];
+  };
+}
+
+interface AdaptedWallet {
+  vmType: 'svm';
+  getChainId: () => Promise<number>;
+  address: () => Promise<string>;
+  handleSignMessageStep: (item: SignatureStepItem) => Promise<string>;
+  handleSendTransactionStep: (chainId: number, stepItem: TransactionStepItem) => Promise<string>;
+  handleConfirmTransactionStep: (txHash: string) => Promise<{
+    blockHash: string;
+    blockNumber: number;
+    txHash: string;
+  }>;
+  switchChain: (chainId: number) => Promise<void>;
+}
+
+// Constants for RPC configuration
+const QUICKNODE_URL = 'https://frequent-indulgent-theorem.solana-mainnet.quiknode.pro/288c090b70deb85f86ba0f2feaad99f9e56e7c2d/'
+
+// Helper function to wait with exponential backoff
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+// Helper function to get blockhash with retries
+async function getBlockhashWithRetry(connection: Connection, retries = 3, backoff = 1000): Promise<string> {
+  try {
+    console.log('Attempting to get blockhash...')
+    const { blockhash } = await connection.getLatestBlockhash('confirmed')
+    console.log('Successfully got blockhash:', blockhash)
+    return blockhash
+  } catch (error) {
+    console.error('Error getting blockhash:', error)
+    
+    if (retries <= 0) {
+      console.error('No more retries left for getting blockhash')
+      throw new Error(`Failed to get blockhash after multiple attempts: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    
+    console.log(`Retrying blockhash retrieval in ${backoff}ms, retries left: ${retries}`)
+    await wait(backoff)
+    
+    return getBlockhashWithRetry(connection, retries - 1, backoff * 2)
+  }
+}
+
+// Define the interface for the Solana wallet adapter
+export interface SolanaWalletInterface {
+  publicKey: string;
+  signTransaction: (transaction: Transaction | VersionedTransaction) => Promise<Transaction | VersionedTransaction>;
+  signAllTransactions: (transactions: (Transaction | VersionedTransaction)[]) => Promise<(Transaction | VersionedTransaction)[]>;
+  signMessage: (message: Uint8Array) => Promise<Uint8Array>;
+  sendTransaction?: (transaction: Transaction | VersionedTransaction, connection: Connection) => Promise<{ signature: string }>;
+}
+
+// Enhanced adapter for Solana wallets
+export const adaptSolanaWallet = async (wallet: SolanaWalletInterface): Promise<AdaptedWallet> => {
+  console.log('Initializing Solana wallet adapter...')
+  
+  // Create Solana connection with proper configuration
+  const connection = new Connection(QUICKNODE_URL, {
+    commitment: 'confirmed',
+    httpHeaders: {
+      'Content-Type': 'application/json',
+    },
+    confirmTransactionInitialTimeout: 60000, // 60 seconds
+  });
+  
+  // Test the connection and log cluster version
+  try {
+    const version = await connection.getVersion();
+    console.log('Successfully connected to Solana network:', {
+      'Feature Set': version['feature-set'],
+      'Solana Core': version['solana-core']
+    });
+    
+    // Additional connection test
+    const slot = await connection.getSlot();
+    console.log('Current slot:', slot);
+  } catch (err) {
+    console.error('Failed to connect to Solana network:', err);
+    throw new Error(`Failed to establish Solana connection: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return {
+    vmType: 'svm',
+    getChainId: async () => {
+      console.log('Getting chain ID: 792703809 (Relay Solana chain ID)')
+      return 792703809 // Relay's Solana chain ID
+    },
+    address: async () => {
+      console.log('Getting wallet public key:', wallet.publicKey)
+      return wallet.publicKey
+    },
+    handleSignMessageStep: async (item: SignatureStepItem) => {
+      console.log('Handling message signing step...')
+      try {
+        if (!item.data?.sign?.message) {
+          console.error('No message provided for signing')
+          throw new Error('No message provided for signing')
+        }
+        
+        console.log('Converting message to bytes...')
+        const messageBytes = Buffer.from(item.data.sign.message)
+        
+        console.log('Requesting message signature from wallet...')
+        let signature: Uint8Array;
+        
+        try {
+          // First try the provided wallet
+          signature = await wallet.signMessage(messageBytes);
+          console.log('Message signed with provided wallet');
+        } catch (err) {
+          console.error('Error signing with provided wallet:', err);
+          
+          // Try browser wallets as fallback
+          try {
+            signature = await signMessageWithBrowserWallet(messageBytes);
+            console.log('Message signed with browser wallet');
+          } catch (browserErr) {
+            console.error('Error signing with browser wallet:', browserErr);
+            throw new Error('Failed to sign message with any available wallet');
+          }
+        }
+        
+        const hexSignature = Buffer.from(signature).toString('hex')
+        console.log('Message successfully signed, signature:', hexSignature.slice(0, 10) + '...')
+        
+        return hexSignature
+      } catch (err: any) {
+        console.error('Error in handleSignMessageStep:', err)
+        throw new Error(`Failed to sign message with Solana wallet: ${err.message || 'Unknown error'}`)
+      }
+    },
+    handleSendTransactionStep: async (chainId: number, stepItem: TransactionStepItem) => {
+      console.log('Handling send transaction step...')
+      const client = getClient()
+
+      try {
+        if (!stepItem?.data?.instructions) {
+          console.error('No instructions provided in transaction step')
+          throw new Error('No instructions provided for transaction')
+        }
+
+        console.log(`Processing ${stepItem.data.instructions.length} instructions...`)
+        const instructions = stepItem.data.instructions.map((instruction, index) => {
+          console.log(`Creating instruction ${index + 1}/${stepItem.data.instructions.length}`)
+          return new TransactionInstruction({
+            keys: instruction.keys.map((key) => ({
+              isSigner: key.isSigner,
+              isWritable: key.isWritable,
+              pubkey: new PublicKey(key.pubkey)
+            })),
+            programId: new PublicKey(instruction.programId),
+            data: Buffer.from(instruction.data, 'hex')
+          })
+        })
+
+        console.log('Getting blockhash...')
+        const blockhash = await getBlockhashWithRetry(connection)
+        console.log('Blockhash obtained:', blockhash)
+
+        console.log('Creating transaction message...')
+        const messageV0 = new TransactionMessage({
+          payerKey: new PublicKey(wallet.publicKey),
+          instructions,
+          recentBlockhash: blockhash
+        }).compileToV0Message(
+          await Promise.all(
+            stepItem.data.addressLookupTableAddresses?.map(
+              async (address: string) => {
+                console.log('Fetching lookup table for address:', address)
+                try {
+                  const response = await connection.getAddressLookupTable(new PublicKey(address))
+                  if (!response.value) {
+                    throw new Error(`No lookup table found for address: ${address}`)
+                  }
+                  return response.value as AddressLookupTableAccount
+                } catch (err: any) {
+                  console.error(`Error fetching lookup table for ${address}:`, err)
+                  throw new Error(`Failed to fetch lookup table: ${err.message || 'Unknown error'}`)
+                }
+              }
+            ) ?? []
+          )
+        )
+
+        console.log('Creating versioned transaction...')
+        const transaction = new VersionedTransaction(messageV0)
+        
+        let signature: string;
+        try {
+          // First try the wallet's sendTransaction method if available
+          if (wallet.sendTransaction) {
+            console.log('Using wallet.sendTransaction method...')
+            try {
+              const result = await wallet.sendTransaction(transaction, connection)
+              signature = result.signature
+              console.log('Transaction sent with wallet.sendTransaction:', signature)
+              return signature
+            } catch (err) {
+              console.error('Error with wallet.sendTransaction:', err)
+              // Continue to fallback methods
+            }
+          }
+          
+          // Next try to sign with the wallet and send manually
+          console.log('Trying to sign and send manually...')
+          let signedTx: Transaction | VersionedTransaction;
+          
+          try {
+            // Try signing with the provided wallet
+            signedTx = await wallet.signTransaction(transaction)
+            console.log('Transaction signed with provided wallet')
+          } catch (err) {
+            console.error('Error signing with provided wallet:', err)
+            
+            // Try browser wallets as fallback
+            try {
+              signedTx = await signWithBrowserWallet(transaction);
+              console.log('Transaction signed with browser wallet')
+            } catch (browserErr) {
+              console.error('Error signing with browser wallet:', browserErr);
+              throw new Error('Failed to sign transaction with any available wallet');
+            }
+          }
+          
+          // Send the signed transaction
+          console.log('Sending signed transaction...')
+          signature = await connection.sendRawTransaction((signedTx as VersionedTransaction).serialize())
+          console.log('Transaction sent successfully! Signature:', signature)
+          return signature
+          
+        } catch (err: any) {
+          console.error('Error in transaction send/sign:', err)
+          throw new Error(`Transaction send failed: ${err.message || 'Unknown error'}`)
+        }
+
+      } catch (err: any) {
+        console.error('Error in handleSendTransactionStep:', err)
+        throw new Error(`Failed to send Solana transaction: ${err.message || 'Unknown error'}`)
+      }
+    },
+    handleConfirmTransactionStep: async (txHash: string) => {
+      console.log('Handling confirm transaction step for hash:', txHash)
+      try {
+        console.log('Getting latest blockhash for confirmation...')
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+
+        console.log('Confirming transaction...')
+        const result = await connection.confirmTransaction({
+          blockhash,
+          lastValidBlockHeight,
+          signature: txHash
+        }, 'confirmed')
+
+        if (result.value.err) {
+          console.error('Transaction confirmation failed:', result.value.err)
+          throw new Error(`Transaction failed: ${result.value.err}`)
+        }
+
+        console.log('Transaction confirmed successfully!')
+        return {
+          blockHash: result.context.slot.toString(),
+          blockNumber: result.context.slot,
+          txHash
+        }
+      } catch (err: any) {
+        console.error('Error in handleConfirmTransactionStep:', err)
+        throw new Error(`Failed to confirm Solana transaction: ${err.message || 'Unknown error'}`)
+      }
+    },
+    switchChain: async (chainId: number) => {
+      console.log('Chain switch requested to:', chainId);
+      if (chainId !== 792703809) {
+        console.error('Invalid Relay Solana chain ID:', chainId);
+        throw new Error(`Invalid Relay Solana chain ID: ${chainId}`);
+      }
+      console.log('Chain ID validated for Relay');
+    }
+  }
+} 

@@ -1,0 +1,238 @@
+{
+  "ABNGNGLA": {
+    "name": "Access Bank",
+    "logoPath": "/bank-logos/access-bank.png"
+  },
+  "DBLNNGLA": {
+    "name": "Access Bank (Diamond)",
+    "logoPath": "/bank-logos/access-bank-diamond.png"
+  },
+  "FIDTNGLA": {
+    "name": "Fidelity Bank",
+    "logoPath": "/bank-logos/fidelity-bank.png"
+  },
+  "FCMBNGLA": {
+    "name": "First City Monument Bank",
+    "logoPath": "/bank-logos/first-city-monument-bank.png"
+  },
+  "FBNINGLA": {
+    "name": "First Bank of Nigeria",
+    "logoPath": "/bank-logos/first-bank-of-nigeria.png"
+  },
+  "GTBINGLA": {
+    "name": "Guaranty Trust Bank",
+    "logoPath": "/bank-logos/guaranty-trust-bank.png"
+  },
+  "PRDTNGLA": {
+    "name": "Polaris Bank",
+    "logoPath": "/bank-logos/polaris-bank.png"
+  },
+  "UBNINGLA": {
+    "name": "Union Bank",
+    "logoPath": "/bank-logos/union-bank-of-nigeria.png"
+  },
+  "UNAFNGLA": {
+    "name": "United Bank for Africa",
+    "logoPath": "/bank-logos/united-bank-for-africa.png"
+  },
+  "CITINGLA": {
+    "name": "Citibank Nigeria",
+    "logoPath": "/bank-logos/citibank-nigeria.png"
+  },
+  "ECOCNGLA": {
+    "name": "Ecobank Nigeria",
+    "logoPath": "/bank-logos/ecobank-nigeria.png"
+  },
+  "HBCLNGLA": {
+    "name": "Heritage Bank",
+    "logoPath": "/bank-logos/heritage-bank.png"
+  },
+  "PLNINGLA": {
+    "name": "Keystone Bank",
+    "logoPath": "/bank-logos/keystone-bank.png"
+  },
+  "SBICNGLA": {
+    "name": "Stanbic IBTC Bank",
+    "logoPath": "/bank-logos/stanbic-ibtc-bank.png"
+  },
+  "SCBLNGLA": {
+    "name": "Standard Chartered Bank",
+    "logoPath": "/bank-logos/standard-chartered-bank.png"
+  },
+  "NAMENGLA": {
+    "name": "Sterling Bank",
+    "logoPath": "/bank-logos/sterling-bank.png"
+  },
+  "ICITNGLA": {
+    "name": "Unity Bank",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "SUTGNGLA": {
+    "name": "Suntrust Bank",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "PROVNGLA": {
+    "name": "Providus Bank",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "JAIZNGLA": {
+    "name": "Jaiz Bank",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "ZEIBNGLA": {
+    "name": "Zenith Bank",
+    "logoPath": "/bank-logos/zenith-bank.png"
+  },
+  "WEMANGLA": {
+    "name": "Wema Bank",
+    "logoPath": "/bank-logos/wema-bank.png"
+  },
+  "KUDANGPC": {
+    "name": "Kuda Microfinance Bank",
+    "logoPath": "/bank-logos/kuda-bank.png"
+  },
+  "OPAYNGPC": {
+    "name": "OPay",
+    "logoPath": "/bank-logos/opay.png"
+  },
+  "PALMNGPC": {
+    "name": "PalmPay",
+    "logoPath": "/bank-logos/palmpay.png"
+  },
+  "PAYTNGPC": {
+    "name": "Paystack-Titan MFB",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "MONINGPC": {
+    "name": "Moniepoint MFB",
+    "logoPath": "/bank-logos/moniepoint-mfb-ng.png"
+  },
+  "SAHVNGPC": {
+    "name": "Safe Haven MFB",
+    "logoPath": "/bank-logos/default-image.png"
+  },
+  "035A": {
+    "name": "ALAT by WEMA",
+    "logoPath": "/bank-logos/alat-by-wema.png"
+  },
+  "044": {
+    "name": "Access Bank",
+    "logoPath": "/bank-logos/access-bank.png"
+  },
+  "063": {
+    "name": "Access Bank (Diamond)",
+    "logoPath": "/bank-logos/access-bank-diamond.png"
+  },
+  "050": {
+    "name": "Ecobank Nigeria",
+    "logoPath": "/bank-logos/ecobank-nigeria.png"
+  },
+  "070": {
+    "name": "Fidelity Bank",
+    "logoPath": "/bank-logos/fidelity-bank.png"
+  },
+  "011": {
+    "name": "First Bank of Nigeria",
+    "logoPath": "/bank-logos/first-bank-of-nigeria.png"
+  },
+  "214": {
+    "name": "First City Monument Bank",
+    "logoPath": "/bank-logos/first-city-monument-bank.png"
+  },
+  "058": {
+    "name": "Guaranty Trust Bank",
+    "logoPath": "/bank-logos/guaranty-trust-bank.png"
+  },
+  "030": {
+    "name": "Heritage Bank",
+    "logoPath": "/bank-logos/heritage-bank.png"
+  },
+  "082": {
+    "name": "Keystone Bank",
+    "logoPath": "/bank-logos/keystone-bank.png"
+  },
+  "076": {
+    "name": "Polaris Bank",
+    "logoPath": "/bank-logos/polaris-bank.png"
+  },
+  "221": {
+    "name": "Stanbic IBTC Bank",
+    "logoPath": "/bank-logos/stanbic-ibtc-bank.png"
+  },
+  "068": {
+    "name": "Standard Chartered Bank",
+    "logoPath": "/bank-logos/standard-chartered-bank.png"
+  },
+  "232": {
+    "name": "Sterling Bank",
+    "logoPath": "/bank-logos/sterling-bank.png"
+  },
+  "032": {
+    "name": "Union Bank of Nigeria",
+    "logoPath": "/bank-logos/union-bank-of-nigeria.png"
+  },
+  "033": {
+    "name": "United Bank For Africa",
+    "logoPath": "/bank-logos/united-bank-for-africa.png"
+  },
+  "035": {
+    "name": "Wema Bank",
+    "logoPath": "/bank-logos/wema-bank.png"
+  },
+  "057": {
+    "name": "Zenith Bank",
+    "logoPath": "/bank-logos/zenith-bank.png"
+  },
+  "00103": {
+    "name": "Globus Bank",
+    "logoPath": "/bank-logos/globus-bank.png"
+  },
+  "50211": {
+    "name": "Kuda Bank",
+    "logoPath": "/bank-logos/kuda-bank.png"
+  },
+  "999992": {
+    "name": "OPay",
+    "logoPath": "/bank-logos/opay.png"
+  },
+  "999991": {
+    "name": "PalmPay",
+    "logoPath": "/bank-logos/palmpay.png"
+  },
+  "50515": {
+    "name": "Moniepoint MFB",
+    "logoPath": "/bank-logos/moniepoint-mfb-ng.png"
+  },
+  "51310": {
+    "name": "Sparkle Microfinance Bank",
+    "logoPath": "/bank-logos/sparkle-microfinance-bank.png"
+  },
+  "562": {
+    "name": "Ekondo Microfinance Bank",
+    "logoPath": "/bank-logos/ekondo-microfinance-bank.png"
+  },
+  "50823": {
+    "name": "CEMCS Microfinance Bank",
+    "logoPath": "/bank-logos/cemcs-microfinance-bank.png"
+  },
+  "302": {
+    "name": "TAJ Bank",
+    "logoPath": "/bank-logos/taj-bank.png"
+  },
+  "303": {
+    "name": "Lotus Bank",
+    "logoPath": "/bank-logos/lotus-bank.png"
+  },
+  "327": {
+    "name": "Paga",
+    "logoPath": "/bank-logos/paga.png"
+  },
+  "401": {
+    "name": "ASO Savings and Loans",
+    "logoPath": "/bank-logos/asosavings.png"
+  },
+  "023": {
+    "name": "Citibank Nigeria",
+    "logoPath": "/bank-logos/citibank-nigeria.png"
+  }
+}
