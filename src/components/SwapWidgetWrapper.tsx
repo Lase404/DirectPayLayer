@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { SwapWidget, SlippageToleranceConfig, RelayKitProvider } from '@reservoir0x/relay-kit-ui'
 import { useAccount, useWalletClient } from 'wagmi'
 import { SUPPORTED_CHAINS } from '@/utils/bridge'
@@ -8,7 +8,7 @@ import { usePrivy } from '@privy-io/react-auth'
 import '@/styles/relay-overrides.css'
 import { getRatesForOfframp } from '@/utils/paycrest'
 import { adaptViemWallet } from '@reservoir0x/relay-sdk'
-import { adaptSolanaWallet, adaptSolanaWalletCore } from '@/utils/solanaAdapter'
+import { adaptSolanaWallet } from '@/utils/solanaAdapter'
 import { Connection, Transaction, VersionedTransaction } from '@solana/web3.js'
 import axios from 'axios'
 import { convertViemChainToRelayChain, MAINNET_RELAY_API } from '@reservoir0x/relay-sdk'
@@ -16,7 +16,8 @@ import { mainnet } from '@wagmi/core/chains'
 import '@reservoir0x/relay-kit-ui/styles.css'
 import { useRelayChains } from '@reservoir0x/relay-kit-hooks'
 import { type WalletClient } from 'viem'
-import { User, Wallet } from '@privy-io/react-auth'
+import { User } from '@privy-io/react-auth'
+import TransactionStatusModal, { TransactionStatus, BankAccount } from './TransactionStatusModal'
 
 // Define OrderStatus type
 type OrderStatus = 'initiated' | 'settled' | 'refunded' | 'expired';
@@ -57,8 +58,8 @@ declare global {
 // Constants
 const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF' // Only used for Solana wallets in Paycrest orders
 const DEFAULT_RATE = 1600
-const ORDER_REFRESH_INTERVAL = 30 * 60 * 1000 // 30 minutes in milliseconds
-const ORDER_CHECK_INTERVAL = 60 * 1000 // 1 minute in milliseconds
+const ORDER_REFRESH_INTERVAL = 1 * 60 * 1000 // 1 minute in milliseconds (for testing)
+const ORDER_CHECK_INTERVAL = 10 * 1000 // 10 seconds in milliseconds (for faster testing)
 
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
@@ -206,7 +207,7 @@ export const setupWallet = async (
   user: User | null,
   walletClient: WalletClient | null,
   setAdaptedWallet: (wallet: any) => void,
-  setWalletType: (type: string) => void,
+  setWalletType: React.Dispatch<React.SetStateAction<'evm' | 'svm' | null>>,
   setError: (error: string | null) => void
 ) => {
       if (!ready || !user) return;
@@ -394,7 +395,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
   
   // Move setupWallet function outside useEffect
   useEffect(() => {
-    setupWallet(ready, user, walletClient, setAdaptedWallet, setWalletType, setError);
+    setupWallet(ready, user, walletClient || null, setAdaptedWallet, setWalletType, setError);
   }, [ready, user, walletClient]);
   
   // Define tokens outside of render cycle
@@ -794,7 +795,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 
   // Define the functions
   async function handleSwapSuccess() {
-    console.log('Swap successful, creating new order...')
+    console.log('handleSwapSuccess function started')
     
     // Get bank details from localStorage
     const storedBank = localStorage.getItem('linkedBankAccount')
@@ -805,23 +806,41 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     
     try {
       const bankDetails = JSON.parse(storedBank)
+      console.log('Bank details found:', bankDetails)
       
       // Force create new order after successful swap
+      console.log('Forcing creation of new order after swap success')
       const newAddress = await createNewOrder(true)
       console.log('New receive address after successful swap:', newAddress)
       
       // Get the current order ID and details
       const orderId = localStorage.getItem('paycrestOrderId')
       if (orderId) {
+        console.log('Using order ID for transaction:', orderId)
+        // Create bank account object from stored details
+        const bankAccount: BankAccount = {
+          currency: 'NGN',
+          institution: bankDetails.institution,
+          accountIdentifier: bankDetails.accountIdentifier,
+          accountName: bankDetails.accountName || '',
+          memo: 'DirectPay Offramp'
+        }
+        
         // Create transaction record
         const transaction: TransactionStatus = {
           id: orderId,
           amount: outputValue.toString(),
           nairaAmount: nairaAmount,
-          bankAccount: `${bankDetails.institution} - ${bankDetails.accountIdentifier}`,
+          bankAccount: bankAccount,
           status: 'initiated',
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          token: 'USDC',
+          rate: paycrestRate.toString(),
+          network: 'base'
         }
+        
+        // Log the transaction with bank details
+        console.log('New transaction created:', transaction)
         
         // Update transaction history
         setTransactionHistory(prev => [...prev, transaction])
@@ -829,13 +848,16 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         // Show transaction status
         setCurrentTransaction(transaction)
         setShowTransactionStatus(true)
+        console.log('Transaction status modal displayed')
         
         // Start polling for status updates
         const pollInterval = setInterval(async () => {
           try {
+            console.log('Polling order status for:', orderId)
             const status = await checkOrderStatus(orderId)
             if (status !== 'initiated') {
               clearInterval(pollInterval)
+              console.log(`Order status changed from initiated to: ${status}`)
               
               // Update transaction status
               setTransactionHistory(prev => 
@@ -853,6 +875,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               
               // If status is not good, create new order
               if (status !== 'settled') {
+                console.log('Order not settled, creating new order')
                 await createNewOrder(true)
               }
             }
@@ -863,7 +886,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         }, 5000) // Poll every 5 seconds
         
         // Stop polling after 5 minutes
-        setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          console.log('Order status polling stopped after timeout')
+        }, 5 * 60 * 1000)
+      } else {
+        console.error('No order ID found after swap success')
       }
       
       // If we have a parent success callback, also call it
@@ -871,6 +899,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         console.log('Calling parent swap success handler with bank details')
         await onSwapSuccess(JSON.parse(storedBank))
       }
+      console.log('handleSwapSuccess completed successfully')
     } catch (error) {
       console.error('Failed to create new order after swap:', error)
     }
@@ -912,11 +941,22 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       }
     }
     
-    // Handle successful swap
+    // Handle successful swap - add extra debugging
     if (e.eventName === 'SWAP_SUCCESS') {
-      console.log("SWAP_SUCCESS event detected, creating new address")
+      console.log("SWAP_SUCCESS EVENT DETECTED")
+      console.log("Swap success data:", JSON.stringify(e.data, null, 2))
+      console.log("Creating new Paycrest order after successful swap")
+      
+      // Track that a swap success occurred
       setSwapSuccessOccurred(true)
-      handleSwapSuccess()
+      
+      try {
+        // Handle the swap success
+        handleSwapSuccess()
+        console.log("handleSwapSuccess function called successfully")
+      } catch (err) {
+        console.error("Error in handleSwapSuccess:", err)
+      }
     }
 
     // Handle SWAP_MODAL_CLOSED - if it follows a SWAP_SUCCESS, log the user out
@@ -1276,352 +1316,41 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }
 
-  // Add new interfaces at the top of the file
-  interface TransactionStatus {
-    id: string;
-    amount: string;
-    nairaAmount: string;
-    bankAccount: string;
-    status: 'initiated' | 'settled' | 'refunded' | 'expired';
-    timestamp: number;
-    txHash?: string;
-  }
-
   // Add new state for transaction tracking
   const [transactionHistory, setTransactionHistory] = useState<TransactionStatus[]>([]);
   const [showTransactionStatus, setShowTransactionStatus] = useState(false);
   const [currentTransaction, setCurrentTransaction] = useState<TransactionStatus | null>(null);
 
-  // Add the TransactionStatusModal component
-  const TransactionStatusModal = ({ transaction, onClose }: { transaction: TransactionStatus, onClose: () => void }) => {
-    const [isExpanded, setIsExpanded] = useState(false);
-    const [isRefreshing, setIsRefreshing] = useState(false);
-    const [lastUpdate, setLastUpdate] = useState(Date.now());
-    const [showHistory, setShowHistory] = useState(false);
-    const [searchQuery, setSearchQuery] = useState('');
-    const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
-    
-    // Calculate summary statistics
-    const successfulTransactions = transactionHistory
-      .filter(tx => tx.status === 'settled')
-      .sort((a, b) => b.timestamp - a.timestamp);
-    
-    const totalAmount = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
-    const totalNaira = successfulTransactions.reduce((sum, tx) => sum + parseFloat(tx.nairaAmount), 0);
-    const last30Days = successfulTransactions.filter(tx => 
-      tx.timestamp > Date.now() - 30 * 24 * 60 * 60 * 1000
-    );
-
-    // Filter transactions based on search query and date filter
-    const filteredTransactions = successfulTransactions.filter(tx => {
-      const matchesSearch = 
-        tx.amount.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        tx.nairaAmount.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        tx.bankAccount.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        tx.id.toLowerCase().includes(searchQuery.toLowerCase());
-
-      const now = Date.now();
-      const txDate = tx.timestamp;
-      const matchesDate = 
-        dateFilter === 'all' ? true :
-        dateFilter === 'today' ? txDate > now - 24 * 60 * 60 * 1000 :
-        dateFilter === 'week' ? txDate > now - 7 * 24 * 60 * 60 * 1000 :
-        txDate > now - 30 * 24 * 60 * 60 * 1000;
-
-      return matchesSearch && matchesDate;
-    });
-    
-    // Auto-close timer for completed transactions
-    useEffect(() => {
-      if (transaction.status === 'settled') {
-        const timer = setTimeout(() => {
-          onClose();
-        }, 5000); // Close after 5 seconds for completed transactions
-        return () => clearTimeout(timer);
-      }
-    }, [transaction.status, onClose]);
-
-    // Auto-refresh status every 10 seconds
-    useEffect(() => {
-      const refreshStatus = async () => {
-        if (transaction.status === 'initiated') {
-          try {
-            setIsRefreshing(true);
-            const newStatus = await checkOrderStatus(transaction.id);
-            
-            // Update transaction in history
-            setTransactionHistory(prev => 
-              prev.map(tx => 
-                tx.id === transaction.id 
-                  ? { ...tx, status: newStatus }
-                  : tx
-              )
-            );
-            
-            // Update current transaction if it's being shown
-            if (currentTransaction?.id === transaction.id) {
-              setCurrentTransaction(prev => prev ? { ...prev, status: newStatus } : null);
-            }
-            
-            // If status is refunded, automatically expand the modal
-            if (newStatus === 'refunded') {
-              setIsExpanded(true);
-            }
-            
-            setLastUpdate(Date.now());
-      } catch (err) {
-            console.error('Error refreshing status:', err);
-          } finally {
-            setIsRefreshing(false);
-          }
-        }
-      };
-
-      const interval = setInterval(refreshStatus, 10000);
-      return () => clearInterval(interval);
-    }, [transaction.id, transaction.status]);
-
-    const getStatusColor = (status: string) => {
-      switch (status) {
-        case 'settled': return 'bg-blue-500';
-        case 'refunded': return 'bg-yellow-500';
-        case 'expired': return 'bg-red-500';
-        default: return 'bg-blue-400';
-      }
-    };
-    
-    const getStatusMessage = (status: string) => {
-      switch (status) {
-        case 'settled':
-          return 'Transaction completed successfully!';
-        case 'refunded':
-          return walletType === 'evm' 
-            ? 'Amount has been refunded to your wallet address'
-            : 'Please contact t.me/maxcswap on Telegram for refund assistance';
-        case 'expired':
-          return 'Transaction expired. Please try again.';
-        default:
-          return 'Transaction in progress...';
-      }
-    };
-    
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 transform transition-all duration-300 ease-in-out">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-semibold text-blue-900">Transaction Status</h3>
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          
-          <div className="space-y-4">
-            {/* Status Bar */}
-            <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${getStatusColor(transaction.status)}`} />
-              <span className="font-medium text-blue-900">{getStatusMessage(transaction.status)}</span>
-              {isRefreshing && (
-                <div className="ml-2">
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
-                </div>
-              )}
-            </div>
-            
-            {/* Current Transaction Details */}
-            <div className="border-t pt-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-blue-600">Amount</p>
-                  <p className="font-medium text-blue-900">{transaction.amount} USDC</p>
-                </div>
-                <div>
-                  <p className="text-sm text-blue-600">Naira Value</p>
-                  <p className="font-medium text-blue-900">₦{transaction.nairaAmount}</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <div className="space-x-4">
-                <button
-                  onClick={() => setIsExpanded(!isExpanded)}
-                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
-                >
-                  {isExpanded ? 'Show Less' : 'Show More'}
-                </button>
-                <button
-                  onClick={() => setShowHistory(!showHistory)}
-                  className="text-sm text-blue-600 hover:text-blue-800 font-medium"
-                >
-                  {showHistory ? 'Hide History' : 'Show History'}
-                </button>
-              </div>
-              <span className="text-xs text-blue-500">
-                Last updated: {new Date(lastUpdate).toLocaleTimeString()}
-              </span>
-            </div>
-            
-            {/* Expanded Details */}
-            {isExpanded && (
-              <div className="space-y-2 text-sm">
-                <div>
-                  <p className="text-blue-600">Bank Account</p>
-                  <p className="font-medium text-blue-900">{transaction.bankAccount}</p>
-                </div>
-                <div>
-                  <p className="text-blue-600">Transaction ID</p>
-                  <p className="font-medium text-blue-900 break-all">{transaction.id}</p>
-                </div>
-                {transaction.txHash && (
-                  <div>
-                    <p className="text-blue-600">Transaction Hash</p>
-                    <p className="font-medium text-blue-900 break-all">{transaction.txHash}</p>
-                  </div>
-                )}
-                <div>
-                  <p className="text-blue-600">Time</p>
-                  <p className="font-medium text-blue-900">
-                    {new Date(transaction.timestamp).toLocaleString()}
-                  </p>
-                </div>
-                {transaction.status === 'refunded' && walletType === 'evm' && (
-                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                    <p className="text-blue-800">
-                      The refunded amount has been sent back to your connected wallet address.
-                    </p>
-                  </div>
-                )}
-                {transaction.status === 'refunded' && walletType === 'svm' && (
-                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                    <p className="text-blue-800">
-                      Please contact <a href="https://t.me/maxcswap" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800">t.me/maxcswap</a> on Telegram for refund assistance.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Transaction History */}
-            {showHistory && (
-              <div className="mt-4 border-t pt-4">
-                {/* Summary Section */}
-                <div className="mb-6 grid grid-cols-3 gap-4">
-                  <div className="bg-blue-50 p-3 rounded-lg">
-                    <p className="text-sm text-blue-600">Total Transactions</p>
-                    <p className="text-xl font-semibold text-blue-900">{successfulTransactions.length}</p>
-                  </div>
-                  <div className="bg-blue-50 p-3 rounded-lg">
-                    <p className="text-sm text-blue-600">Total USDC</p>
-                    <p className="text-xl font-semibold text-blue-900">{totalAmount.toFixed(2)} USDC</p>
-                  </div>
-                  <div className="bg-blue-50 p-3 rounded-lg">
-                    <p className="text-sm text-blue-600">Total Naira</p>
-                    <p className="text-xl font-semibold text-blue-900">₦{totalNaira.toLocaleString()}</p>
-                  </div>
-                </div>
-
-                {/* Search and Filter Section */}
-                <div className="mb-4 space-y-3">
-                  <div className="flex items-center space-x-2">
-                    <div className="relative flex-1">
-                      <input
-                        type="text"
-                        placeholder="Search by amount, bank account, or ID..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900 placeholder-blue-300"
-                      />
-                      {searchQuery && (
-                        <button
-                          onClick={() => setSearchQuery('')}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-blue-400 hover:text-blue-600"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                    <select
-                      value={dateFilter}
-                      onChange={(e) => setDateFilter(e.target.value as any)}
-                      className="px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-blue-900"
-                    >
-                      <option value="all">All Time</option>
-                      <option value="today">Today</option>
-                      <option value="week">Last 7 Days</option>
-                      <option value="month">Last 30 Days</option>
-                    </select>
-                  </div>
-                  {searchQuery && (
-                    <p className="text-sm text-blue-600">
-                      Found {filteredTransactions.length} transactions matching "{searchQuery}"
-                    </p>
-                  )}
-                </div>
-
-                {/* Transaction List */}
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {filteredTransactions.length > 0 ? (
-                    filteredTransactions.map((tx) => (
-                      <div key={tx.id} className="bg-blue-50 rounded-lg p-3 hover:bg-blue-100 transition-colors">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className="font-medium text-blue-900">{tx.amount} USDC</p>
-                            <p className="text-sm text-blue-600">₦{tx.nairaAmount}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-sm text-blue-600">
-                              {new Date(tx.timestamp).toLocaleDateString()}
-                            </p>
-                            <p className="text-sm text-blue-600">
-                              {new Date(tx.timestamp).toLocaleTimeString()}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="mt-2">
-                          <p className="text-sm text-blue-600 break-all">
-                            Paid to: {tx.bankAccount}
-                          </p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-blue-600 text-center py-4">
-                      {searchQuery ? 'No transactions found matching your search' : 'No successful transactions yet'}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // Function to check Paycrest order status
   async function checkOrderStatus(orderId: string): Promise<OrderStatus> {
     try {
-      const response = await fetch(`https://api.paycrest.ng/v1/orders/${orderId}/status`, {
-        method: 'GET',
+      console.log(`Checking status for order ID: ${orderId}`)
+      
+      const response = await fetch(`https://api.paycrest.io/v1/sender/orders/${orderId}`, {
         headers: {
-          'Content-Type': 'application/json',
-          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc'
+          'API-Key': '7f7d8575-be32-4598-b6a2-43801fe173dc',
+          'Content-Type': 'application/json'
         }
       })
-
+      
       if (!response.ok) {
-        throw new Error(`Failed to check order status: ${response.statusText}`)
+        console.error(`Failed to fetch order status for ID ${orderId}. Status: ${response.status}`)
+        throw new Error('Failed to fetch order status')
       }
-
-      const data = await response.json() as { status: OrderStatus }
-      return data.status
+      
+      const data = await response.json()
+      
+      if (data.status === 'success' && data.data) {
+        const orderStatus = data.data.status as OrderStatus
+        console.log(`Order ${orderId} status: ${orderStatus}`, data.data)
+        return orderStatus
+      }
+      
+      console.warn(`Invalid order status response for ID ${orderId}:`, data)
+      return 'expired'
     } catch (error) {
-      console.error('Error checking order status:', error)
-      throw error
+      console.error(`Error checking order ${orderId} status:`, error)
+      return 'expired'
     }
   }
 
@@ -1631,11 +1360,27 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       // Get bank details from localStorage
       const storedBank = localStorage.getItem('linkedBankAccount')
       if (!storedBank) {
-        console.warn('No bank details found, cannot create order')
+        console.error('[createNewOrder] No bank details found, cannot create order')
         return null
       }
       
       const bankDetails = JSON.parse(storedBank)
+      
+      // Diagnostic log for wallet state
+      console.log('[createNewOrder] walletType:', walletType, 'adaptedWallet:', adaptedWallet);
+      // GUARD: Check for wallet readiness (EVM or Solana)
+      const isEvm = walletType === 'evm';
+      const isSvm = walletType === 'svm';
+      // For EVM, require adaptedWallet.address
+      if (isEvm && (!adaptedWallet || !adaptedWallet.address)) {
+        console.error('[createNewOrder] EVM wallet not ready or address missing, skipping order creation');
+        return null;
+      }
+      // For Solana, just require walletType === 'svm' and authenticated
+      if (isSvm && !authenticated) {
+        console.error('[createNewOrder] Solana wallet not authenticated, skipping order creation');
+        return null;
+      }
       
       // Get current time and check if we need a new order
       const now = Date.now()
@@ -1643,14 +1388,14 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       
       // Only check for existing order if not forced to create a new one
       if (!forceCreate) {
-        // If it hasn't been 30 minutes since the last order was created
+        // If it hasn't been 1 minute since the last order was created
         if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
           // Check if we already have a valid order
           const storedAddress = localStorage.getItem('paycrestReceiveAddress')
           const storedOrderId = localStorage.getItem('paycrestOrderId')
           
           if (storedAddress && storedOrderId) {
-            console.log('Using existing valid order:', storedOrderId)
+            console.log('[createNewOrder] Using existing valid order:', storedOrderId)
             setDestinationAddress(storedAddress)
             return storedAddress
           }
@@ -1658,7 +1403,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       }
       
       // If we reach here, either forceCreate is true or we need a new order
-      console.log('Creating new Paycrest order', forceCreate ? '(forced)' : '')
+      console.log('[createNewOrder] Creating new Paycrest order', forceCreate ? '(forced)' : '')
       
       // Step 1: Get account name and rate in parallel
       const verifyAccountEndpoint = "https://api.paycrest.io/v1/verify-account"
@@ -1685,7 +1430,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         ])
         
         if (!accountNameResponse.ok || !nairaRateResponse.ok) {
-          console.error('Failed to fetch account details or rate')
+          console.error('[createNewOrder] Failed to fetch account details or rate')
           return null
         }
         
@@ -1693,15 +1438,12 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         const rateData = await nairaRateResponse.json()
         
         if (!accountData.data || !rateData.data) {
-          console.error('Invalid response from Paycrest API')
+          console.error('[createNewOrder] Invalid response from Paycrest API')
           return null
         }
         
         const accountName = accountData.data?.accountName || "Unknown Account"
         const rate = rateData.data || DEFAULT_RATE
-        
-        console.log('Account verification successful:', accountName)
-        console.log('Current Naira rate:', rate)
         
         // Step 2: Create the order with the correct payload format
         const createOrderEndpoint = "https://api.paycrest.io/v1/sender/orders"
@@ -1711,10 +1453,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         // Only use connected address if it's an EVM wallet
         if (walletType === 'evm' && connectedAddress && connectedAddress.startsWith('0x')) {
-          console.log('Using connected EVM address for returnAddress:', connectedAddress);
           walletAddress = connectedAddress;
-        } else {
-          console.log('Using default destination address for returnAddress (Solana wallet or no valid EVM address)');
         }
         
         // Generate a unique reference
@@ -1736,7 +1475,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           reference: reference
         }
         
-        console.log('Sending order payload:', orderPayload)
+        console.log('[createNewOrder] Sending order payload:', orderPayload)
         
         const orderResponse = await fetch(createOrderEndpoint, {
           method: "POST",
@@ -1749,21 +1488,34 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         
         if (!orderResponse.ok) {
           const errorText = await orderResponse.text()
-          console.error('Failed to create Paycrest order:', orderResponse.status, errorText)
+          console.error('[createNewOrder] Failed to create Paycrest order:', orderResponse.status, errorText)
           return null
         }
         
         const orderData: PaycrestOrderResponse = await orderResponse.json()
+        console.log('[createNewOrder] API response:', orderData)
         
         if (!orderData.data) {
-          console.error('Order creation failed:', orderData.message || 'Unknown error')
+          console.error('[createNewOrder] Order creation failed:', orderData.message || 'Unknown error')
           return null
         }
         
-        console.log('Order creation successful:', orderData.data)
+        // Store comprehensive order details for later use
+        const lastOrderDetails = {
+          ...orderData.data,
+          orderPayload: orderPayload
+        };
+        localStorage.setItem('paycrestLastOrder', JSON.stringify(lastOrderDetails));
         
         // Store order details including ID
-        localStorage.setItem('paycrestOrderId', orderData.data.id)
+        if (orderData.data.id) {
+          localStorage.setItem('paycrestOrderId', orderData.data.id)
+        } else {
+          console.error('[createNewOrder] API response missing order ID!')
+        }
+        if (orderData.data.validUntil) {
+          localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        }
         localStorage.setItem('paycrestReference', orderData.data.reference)
         localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
         localStorage.setItem('lastOrderTimestamp', now.toString())
@@ -1775,43 +1527,37 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         if (status === 'initiated') {
           const receiveAddress = orderData.data.receiveAddress
           if (receiveAddress) {
-            console.log('New receive address generated:', receiveAddress)
             localStorage.setItem('paycrestReceiveAddress', receiveAddress)
             setDestinationAddress(receiveAddress)
-            
-            // Save connected wallet address for future use (only if it's an EVM address)
             if (walletAddress && walletAddress.startsWith('0x')) {
               localStorage.setItem('connectedWalletAddress', walletAddress)
             }
-            
-            // Trigger storage event for other components
             window.dispatchEvent(new StorageEvent('storage', {
               key: 'paycrestReceiveAddress',
               newValue: receiveAddress
             }))
-            
-            // Mark last valid order
             lastValidOrderRef.current = {
               address: receiveAddress,
               timestamp: now
             }
-            
             setOrderStatus('valid')
+            console.log('[createNewOrder] New order created and valid:', orderData.data.id)
             return receiveAddress
+          } else {
+            console.error('[createNewOrder] API response missing receive address!')
           }
         } else {
-          console.log('Order status not initiated:', status)
+          console.warn('[createNewOrder] Order status not initiated:', status)
           // Force create a new order since this one is not usable
           return createNewOrder(true)
         }
-        
         return null
       } catch (error) {
-        console.error('API request failed:', error)
+        console.error('[createNewOrder] API request failed:', error)
         return null
       }
     } catch (error) {
-      console.error('Error creating order:', error)
+      console.error('[createNewOrder] Error creating order:', error)
       return null
     }
   }
@@ -1822,19 +1568,22 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     const checkAndUpdateOrder = () => {
       const now = Date.now()
       const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      const storedOrderId = localStorage.getItem('paycrestOrderId')
+      
+      console.log(`Order check cycle - Current order ID: ${storedOrderId || 'none'}`)
       
       // Create new order if:
       // 1. No last order time (first load)
       // 2. It's been more than 30 minutes since last order
       if (lastOrderTime === 0 || now - lastOrderTime >= ORDER_REFRESH_INTERVAL) {
-        console.log('Order expired or missing, creating new order')
+        console.log(`Order ${storedOrderId || 'unknown'} expired or missing, creating new order. Last update: ${new Date(lastOrderTime).toLocaleTimeString()}`)
         createNewOrder(true).catch(err => {
           console.error('Failed to create new order:', err)
         })
         } else {
         // Log time remaining until next refresh
         const minutesRemaining = Math.floor((ORDER_REFRESH_INTERVAL - (now - lastOrderTime)) / 60000)
-        console.log(`Order still valid. Next refresh in ${minutesRemaining} minutes`)
+        console.log(`Order ${storedOrderId} still valid. Next refresh in ${minutesRemaining} minutes (${new Date(lastOrderTime + ORDER_REFRESH_INTERVAL).toLocaleTimeString()})`)
       }
     }
 
@@ -1923,6 +1672,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
               wallet={adaptedWallet}
               onAnalyticEvent={handleAnalyticEvent}
               slippageTolerance={slippageTolerance}
+              onSwapSuccess={handleSwapSuccess}
             />
             
             {/* Move slippage config to bottom */}
@@ -2022,6 +1772,8 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
         <TransactionStatusModal
           transaction={currentTransaction}
           onClose={() => setShowTransactionStatus(false)}
+          transactions={transactionHistory}
+          showHistory={true}
         />
       )}
     </div>

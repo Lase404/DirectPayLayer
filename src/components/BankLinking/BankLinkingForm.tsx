@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { usePrivy } from '@privy-io/react-auth'
 import { getRatesForOfframp } from '@/utils/paycrest'
+import BankSelectDropdown from './BankSelectDropdown'
 
 // Constants
 const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF'
@@ -67,8 +68,8 @@ export function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) =
   }, [])
 
   // Handle institution selection
-  const handleInstitutionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedInstitution(e.target.value)
+  const handleInstitutionChange = (code: string) => {
+    setSelectedInstitution(code)
     setIsVerified(false)
     setAccountName('')
   }
@@ -82,8 +83,16 @@ export function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) =
 
   // Verify account number
   const verifyAccount = async () => {
-    if (!selectedInstitution) return setError('Please select a bank')
-    if (!accountNumber || accountNumber.length < 10) return setError('Please enter a valid account number')
+    if (!selectedInstitution) {
+      setError('Please select a bank')
+      return
+    }
+    
+    if (!accountNumber || accountNumber.length < 10) {
+      setError('Please enter a valid account number')
+      return
+    }
+    
     try {
       setIsVerifying(true)
       setError(null)
@@ -175,18 +184,30 @@ export function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) =
         localStorage.setItem('linkedBankAccount', JSON.stringify(bankDetails))
         localStorage.setItem('paycrestReceiveAddress', data.data.receiveAddress)
         
+        // Store order ID if present
+        if (data.data.id) {
+          localStorage.setItem('paycrestOrderId', data.data.id)
+        } else {
+          console.error('Paycrest order response missing order ID!')
+        }
+        // Store lastOrderTimestamp
+        localStorage.setItem('lastOrderTimestamp', Date.now().toString())
+        // Store validUntil if present
+        if (data.data.validUntil) {
+          localStorage.setItem('paycrestValidUntil', data.data.validUntil)
+        }
         // Dispatch a storage event to notify other components
         window.dispatchEvent(new StorageEvent('storage', {
           key: 'paycrestReceiveAddress',
           newValue: data.data.receiveAddress,
           url: window.location.href
         }))
-        
         // Call the onLinked callback instead of refreshing
         if (onLinked) {
           onLinked(bankDetails)
         }
       } else {
+        console.error('Failed to get receive address or order ID from Paycrest')
         throw new Error('Failed to get receive address from Paycrest')
       }
     } catch (error) {
@@ -245,28 +266,13 @@ export function BankLinkingForm({ onLinked }: { onLinked?: (bank: BankAccount) =
           <label className="block text-sm font-medium text-gray-700 mb-2" htmlFor="bank">
             Select Bank
           </label>
-          <div className="relative">
-            <select
-              id="bank"
-              value={selectedInstitution}
-              onChange={handleInstitutionChange}
-              className="block w-full pl-3 pr-10 py-2.5 text-base border-gray-300 focus:outline-none focus:ring-primary-500 focus:border-primary-500 rounded-lg"
-              disabled={isLoading || isSubmitting || !authenticated}
-              required
-            >
-              <option value="">Choose your bank</option>
-              {institutions.map((institution) => (
-                <option key={institution.code} value={institution.code}>
-                  {institution.name}
-                </option>
-              ))}
-            </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-              <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-              </svg>
-            </div>
-          </div>
+          <BankSelectDropdown
+            options={institutions}
+            value={selectedInstitution}
+            onChange={handleInstitutionChange}
+            disabled={isLoading || isSubmitting || !authenticated}
+            placeholder="Choose your bank"
+          />
         </div>
 
         <div>

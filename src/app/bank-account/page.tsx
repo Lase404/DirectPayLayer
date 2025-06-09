@@ -5,6 +5,7 @@ import { BankLinkingForm } from '@/components/BankLinking/BankLinkingForm'
 import SwapWidgetWrapper from '@/components/SwapWidgetWrapper'
 import Image from 'next/image'
 import { usePrivy } from '@privy-io/react-auth'
+import { getBankLogoFromPaycrestCode } from '@/utils/banks'
 
 // Add a constant for the API key
 const PAYCREST_API_KEY = "208a4aef-1320-4222-82b4-e3bca8781b4b";
@@ -153,14 +154,16 @@ export default function BankAccountPage() {
           return null;
         }
         
-        console.log('Order creation successful:', orderData.data);
+        console.log('Order creation successful!', orderData.data);
         
         // Save order details
+        const oldOrderId = localStorage.getItem('paycrestOrderId');
         localStorage.setItem('paycrestOrderId', orderData.data.id);
         localStorage.setItem('paycrestReference', reference);
         localStorage.setItem('paycrestValidUntil', orderData.data.validUntil);
         localStorage.setItem('lastOrderTimestamp', Date.now().toString());
         
+        console.log(`Order ID updated: ${oldOrderId || 'none'} → ${orderData.data.id}`);
         setPaycrestOrderId(orderData.data.id);
         
         // Save receive address and trigger storage event
@@ -246,9 +249,15 @@ export default function BankAccountPage() {
                 <div className="bg-gray-50 py-1.5 px-3 rounded-l-lg flex items-center border border-r-0 border-gray-200">
                   <div className="flex items-center">
                     <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
-                    <svg className="w-4 h-4 text-gray-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                    </svg>
+                    <div className="w-5 h-5 mr-2 flex-shrink-0 bg-white rounded-md border border-gray-100 overflow-hidden">
+                      <Image 
+                        src={getBankLogoFromPaycrestCode(bankDetails.institution)}
+                        alt={bankDetails.institution}
+                        width={20} 
+                        height={20}
+                        className="object-contain"
+                      />
+                    </div>
                   </div>
                   <div>
                     <span className="text-sm font-medium text-gray-700">{bankDetails.institution}</span>
@@ -294,8 +303,8 @@ export default function BankAccountPage() {
                 <span>Connect Wallet</span>
               </button>
             ) : null}
-        </div>
-        
+          </div>
+          
           {/* Improved Mobile Menu Button */}
           <button 
             className="sm:hidden p-2 rounded-md text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
@@ -326,10 +335,16 @@ export default function BankAccountPage() {
                   <div className="flex items-center p-2 bg-gray-50 rounded-lg border border-gray-200">
                     <div className="flex items-center">
                       <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
-                      <svg className="w-4 h-4 text-gray-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                </svg>
-              </div>
+                      <div className="w-5 h-5 mr-2 flex-shrink-0 bg-white rounded-md border border-gray-100 overflow-hidden">
+                        <Image 
+                          src={getBankLogoFromPaycrestCode(bankDetails.institution)}
+                          alt={bankDetails.institution}
+                          width={20} 
+                          height={20}
+                          className="object-contain"
+                        />
+                      </div>
+                    </div>
                     <div>
                       <span className="text-sm font-medium text-gray-700">{bankDetails.institution}</span>
                       <span className="mx-1 text-gray-400">•</span>
@@ -384,7 +399,7 @@ export default function BankAccountPage() {
                 </button>
               ) : null}
             </div>
-              </div>
+          </div>
         )}
       </header>
 
