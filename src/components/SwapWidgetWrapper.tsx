@@ -814,7 +814,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
     }
   }, [orderStatus])
 
-  // Update handleSwapSuccess to prepare the transaction but don't show it yet
+  // Update handleSwapSuccess to show the transaction popup immediately
   async function handleSwapSuccess(data: any) {
     console.log('handleSwapSuccess function started')
     
@@ -831,9 +831,9 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
       const currentOrderData = localStorage.getItem('paycrestLastOrder')
       const orderData = currentOrderData ? JSON.parse(currentOrderData) : null
       
-      // Store transaction details but don't show popup yet
+      // Show transaction popup immediately
       if (orderData) {
-        setPendingTransaction({
+        const transactionDetails = {
           orderId: orderData.id,
           originToken: {
             symbol: data?.steps?.[0]?.fromToken?.symbol || 'Unknown',
@@ -842,7 +842,11 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
           usdcAmount: orderData.amount,
           nairaAmount: (parseFloat(orderData.amount) * paycrestRate).toFixed(2),
           bankDetails: bankDetails
-        });
+        };
+        
+        setCurrentTransaction(transactionDetails);
+        setShowTransactionStatus(true);
+        setSwapSuccessOccurred(true);
       }
       
       // If we have a parent success callback, call it
@@ -899,15 +903,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 
     if (e.eventName === 'SWAP_MODAL_CLOSED') {
       console.log('SWAP_MODAL_CLOSED event detected')
-      
-      // If we have a pending transaction and this follows a swap success, show the transaction popup
-      if (swapSuccessOccurred && pendingTransaction) {
-        console.log('Showing transaction status popup after modal close')
-        setCurrentTransaction(pendingTransaction)
-        setShowTransactionStatus(true)
-        setPendingTransaction(null) // Clear pending transaction
-        setSwapSuccessOccurred(false) // Reset success flag
-      }
       
       // Handle logout after delay
       if (swapSuccessOccurred) {
