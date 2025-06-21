@@ -2009,7 +2009,7 @@ if (typeof window !== 'undefined') {
       }
       
       .swap-card { 
-        background: #23262f; 
+        background: #FFFFFF; 
         border-radius: 16px; 
         box-shadow: 0 10px 25px rgba(0,0,0,0.08), 0 5px 10px rgba(0,0,0,0.05); 
         padding: 24px 20px; 
