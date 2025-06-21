@@ -17,7 +17,8 @@ import '@reservoir0x/relay-kit-ui/styles.css'
 import { useRelayChains } from '@reservoir0x/relay-kit-hooks'
 import { type WalletClient } from 'viem'
 import { User } from '@privy-io/react-auth'
-import TransactionStatusModal, { TransactionStatus, BankAccount, TransactionStatusType } from './TransactionStatusModal'
+import TransactionStatusModal, { TransactionStatus, BankAccount } from './TransactionStatusModal'
+import TransactionStatusPopup from './TransactionStatusPopup'
 
 // Define OrderStatus type
 type OrderStatus = 'initiated' | 'settled' | 'refunded' | 'expired';
@@ -58,8 +59,8 @@ declare global {
 // Constants
 const DEFAULT_DESTINATION_ADDRESS = '0x1a84de15BD8443d07ED975a25887Fc4E6779DfaF' // Only used for Solana wallets in Paycrest orders
 const DEFAULT_RATE = 1600
-const ORDER_REFRESH_INTERVAL = 1 * 60 * 1000 // 1 minute in milliseconds (for testing)
-const ORDER_CHECK_INTERVAL = 10 * 1000 // 10 seconds in milliseconds (for faster testing)
+const ORDER_REFRESH_INTERVAL = 60 * 1000 // 1 minute in milliseconds
+const ORDER_CHECK_INTERVAL = 30 * 1000 // Check every 30 seconds
 
 // Helper function to detect Solana addresses
 const isSolanaAddress = (address: string): boolean => {
@@ -186,6 +187,20 @@ interface PrivyWalletAccount {
   type: string;
   walletClientType?: string;
   address: string;
+  latestVerifiedAt: Date | null;
+  chainType?: string;
+}
+
+// Add interface for Privy linked account metadata
+interface LinkedAccountWithMetadata {
+  type: string;
+  walletClientType?: string;
+  chainType?: string;
+  latestVerifiedAt: Date | null;
+  address?: string;
+  connectorType?: string;
+  verifiedAt?: Date | null;
+  firstVerifiedAt?: Date | null;
 }
 
 interface SolanaWalletInterface {
@@ -199,7 +214,6 @@ interface SolanaWalletInterface {
 // Update the component to accept props
 interface SwapWidgetWrapperProps {
   onSwapSuccess?: (bankDetails?: any) => Promise<string | null>;
-  onBankAccountChange?: (bankDetails: any) => void;
 }
 
 // Move setupWallet function outside useEffect and component
@@ -211,47 +225,54 @@ export const setupWallet = async (
   setWalletType: React.Dispatch<React.SetStateAction<'evm' | 'svm' | null>>,
   setError: (error: string | null) => void
 ) => {
-      if (!ready || !user) return;
+  if (!ready || !user) return;
       
-      try {
-        // Check for EVM wallet
-        if (walletClient) {
-      // TODO: Using type assertion due to complex type mismatch between Viem's WalletClient
-      // and Reservoir SDK's expected input type. This should be revisited when the SDK
-      // provides better TypeScript type definitions.
-      const evmWallet = adaptViemWallet(walletClient as any);
-      setAdaptedWallet(evmWallet);
-          setWalletType('evm');
-      console.log("EVM wallet adapted:", evmWallet);
-          return;
-        }
-    
+  try {
     // Enhanced logging for wallet detection
     console.log("Checking for wallets in Privy user:", {
       linkedAccounts: user.linkedAccounts,
       wallet: user.wallet
     });
         
-        // Check for Solana wallet in user's linked wallets from Privy
-    const linkedAccounts = (user.linkedAccounts || []) as PrivyWalletAccount[];
+    // Cast to unknown first, then to our type
+    const allAccounts = (user.linkedAccounts || []) as unknown as LinkedAccountWithMetadata[];
+    const linkedAccounts = allAccounts
+      .filter((account): account is PrivyWalletAccount => {
+        return (
+          account.type === 'wallet' &&
+          typeof account.address === 'string' &&
+          account.address.length > 0
+        );
+      });
+
     console.log("All linked accounts:", linkedAccounts);
 
-    const solanaWallet = linkedAccounts.find(account => {
-      console.log("Checking account:", account);
-      const isSolana = account.type === 'wallet' && 
-                      (account.walletClientType?.toLowerCase().includes('solana') ||
-                       account.walletClientType?.toLowerCase().includes('phantom') ||
-                       account.walletClientType?.toLowerCase().includes('solflare'));
-      
-      if (isSolana) {
-        console.log("Found Solana wallet in linked accounts:", account);
-      }
-      return isSolana;
-          });
-          
-          if (solanaWallet) {
-      console.log("Initializing Solana wallet:", solanaWallet);
-            setWalletType('svm');
+    // Sort accounts by latestVerifiedAt in descending order (most recent first)
+    const sortedAccounts = [...linkedAccounts].sort((a, b) => {
+      const dateA = a.latestVerifiedAt ? a.latestVerifiedAt.getTime() : 0;
+      const dateB = b.latestVerifiedAt ? b.latestVerifiedAt.getTime() : 0;
+      return dateB - dateA;
+    });
+
+    // Get the most recently verified wallet
+    const mostRecentWallet = sortedAccounts[0];
+    console.log("Most recently verified wallet:", mostRecentWallet);
+
+    if (!mostRecentWallet) return;
+
+    // Check if it's an EVM wallet
+    if (walletClient && mostRecentWallet.chainType === 'ethereum') {
+      console.log("Using EVM wallet:", mostRecentWallet);
+      const evmWallet = adaptViemWallet(walletClient as any);
+      setAdaptedWallet(evmWallet);
+      setWalletType('evm');
+      return;
+    }
+
+    // Check if it's a Solana wallet
+    if (mostRecentWallet.chainType === 'solana') {
+      console.log("Using Solana wallet:", mostRecentWallet);
+      setWalletType('svm');
       
       try {
         // Create Solana connection
@@ -266,13 +287,11 @@ export const setupWallet = async (
         // Get the solana wallet from Privy's methods
         console.log("Attempting to access specific Solana wallet via Privy...");
         
-        // Use the direct approach with Privy's API to get the wallet client
         const solanaAdaptedWallet = await adaptSolanaWallet({
-          publicKey: solanaWallet.address,
+          publicKey: mostRecentWallet.address,
           signTransaction: async (transaction) => {
             console.log("Signing Solana transaction through Privy");
             
-            // First try browser wallet extensions directly
             if (typeof window !== 'undefined') {
               // Try Solflare first
               if (window.solflare) {
@@ -299,7 +318,6 @@ export const setupWallet = async (
               }
             }
             
-            // If browser wallets failed, log the error
             console.error("Browser wallet signing failed and no other signing methods available");
             throw new Error("Could not sign Solana transaction - no wallet with signing capability found");
           },
@@ -320,13 +338,13 @@ export const setupWallet = async (
         throw err;
       }
     }
-      } catch (err) {
-        console.error("Error setting up wallet:", err);
+  } catch (err) {
+    console.error("Error setting up wallet:", err);
     setError("Failed to initialize wallet. Please try reconnecting.");
   }
 };
 
-export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }: SwapWidgetWrapperProps) {
+export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperProps) {
   const { login, authenticated, user, ready, linkWallet, logout } = usePrivy()
   const { data: walletClient } = useWalletClient()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -335,30 +353,13 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
   const { chains: supportedChains, isLoading: isChainsLoading } = useRelayChains(MAINNET_RELAY_API)
   const [chains, setChains] = useState<any[]>([])
 
-  // Enhanced order state management - Single source of truth for all order-related state
-  const [orderState, setOrderState] = useState<{
-    id: string | null;
-    receiveAddress: string | null;
-    status: OrderStatus | null;
-    validUntil: string | null;
-    reference: string | null;
-    lastUpdated: number;
-    isLoading: boolean;
-    error: string | null;
-    destinationAddress: string;
-    verifiedAddress: string | null; // Add verifiedAddress to track verified addresses
-  }>({
-    id: localStorage.getItem('paycrestOrderId'),
-    receiveAddress: localStorage.getItem('paycrestReceiveAddress'),
-    status: null,
-    validUntil: localStorage.getItem('paycrestValidUntil') || null,
-    reference: localStorage.getItem('paycrestReference') || null,
-    lastUpdated: parseInt(localStorage.getItem('lastOrderTimestamp') || '0'),
-    isLoading: false,
-    error: null,
-    destinationAddress: localStorage.getItem('paycrestReceiveAddress') || DEFAULT_DESTINATION_ADDRESS,
-    verifiedAddress: null
-  });
+  // Update chains when they're loaded
+  useEffect(() => {
+    if (supportedChains && !isChainsLoading) {
+      console.log("Supported chains loaded:", supportedChains)
+      setChains(supportedChains)
+    }
+  }, [supportedChains, isChainsLoading])
   
   // Simplified state
   const [nairaAmount, setNairaAmount] = useState("0.00")
@@ -371,283 +372,40 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
   const isInitialized = useRef(false)
   const [adaptedWallet, setAdaptedWallet] = useState<any>(undefined)
   const [walletType, setWalletType] = useState<'evm' | 'svm' | null>(null)
+  const [destinationAddress, setDestinationAddress] = useState<string>(DEFAULT_DESTINATION_ADDRESS)
   const rateRef = useRef(DEFAULT_RATE)
+  const [lastOrderTime, setLastOrderTime] = useState<number>(0)
   const { address: connectedAddress } = useAccount()
+  const [orderStatus, setOrderStatus] = useState<'valid' | 'expired' | 'none'>('none')
   const lastValidOrderRef = useRef<{ address: string; timestamp: number } | null>(null)
   const [swapSuccessOccurred, setSwapSuccessOccurred] = useState(false)
   const [slippageTolerance, setSlippageTolerance] = useState<string | undefined>(undefined)
   const [showSlippageConfig, setShowSlippageConfig] = useState(false)
+  
+  // Add transaction tracking state
+  const [transactionHistory, setTransactionHistory] = useState<TransactionStatus[]>([])
   const [showTransactionStatus, setShowTransactionStatus] = useState(false)
-  const [currentTransaction, setCurrentTransaction] = useState<any>(null)
-  
-  // Helper function to update order state and localStorage
-  const updateOrderState = useCallback((updates: Partial<typeof orderState>) => {
-    setOrderState(prev => {
-      const newState = { ...prev, ...updates };
-      
-      // Update localStorage for persistent values
-      if (updates.id !== undefined) {
-        if (updates.id) localStorage.setItem('paycrestOrderId', updates.id);
-        else localStorage.removeItem('paycrestOrderId');
-      }
-      
-      if (updates.receiveAddress !== undefined) {
-        if (updates.receiveAddress) {
-          localStorage.setItem('paycrestReceiveAddress', updates.receiveAddress);
-          // Also update destinationAddress when receiveAddress changes
-          newState.destinationAddress = updates.receiveAddress;
-        }
-        else localStorage.removeItem('paycrestReceiveAddress');
-      }
-      
-      if (updates.validUntil !== undefined) {
-        if (updates.validUntil) localStorage.setItem('paycrestValidUntil', updates.validUntil);
-        else localStorage.removeItem('paycrestValidUntil');
-      }
-      
-      if (updates.reference !== undefined) {
-        if (updates.reference) localStorage.setItem('paycrestReference', updates.reference);
-        else localStorage.removeItem('paycrestReference');
-      }
-      
-      if (updates.lastUpdated !== undefined) {
-        localStorage.setItem('lastOrderTimestamp', updates.lastUpdated.toString());
-      }
-      
-      return newState;
-    });
-  }, []);
-  
-  // Clear order state helper
-  const clearOrderState = useCallback(() => {
-    updateOrderState({
-      id: null,
-      receiveAddress: null,
-      status: null,
-      validUntil: null,
-      reference: null,
-      lastUpdated: Date.now(),
-      error: null,
-      destinationAddress: DEFAULT_DESTINATION_ADDRESS
-    });
-  }, [updateOrderState]);
+  const [pendingTransaction, setPendingTransaction] = useState<{
+    orderId?: string;
+    originToken?: { symbol: string; amount: string };
+    usdcAmount?: string;
+    nairaAmount?: string;
+    bankDetails?: any;
+  } | null>(null)
+  const [currentTransaction, setCurrentTransaction] = useState<{
+    orderId?: string;
+    originToken?: { symbol: string; amount: string };
+    usdcAmount?: string;
+    nairaAmount?: string;
+    bankDetails?: any;
+  } | null>(null)
 
-  // Function to check order status
-  const checkOrderStatus = useCallback(async (orderId?: string | null): Promise<OrderStatus | false> => {
-    const id = orderId || orderState.id;
-    if (!id) {
-      console.log("No order ID available to check status");
-      return false;
-    }
-    
-    try {
-      updateOrderState({ isLoading: true });
-      console.log(`Checking order status for ID: ${id}`);
-      
-      // Replace with your actual API call to check order status
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${id}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_KEY}`
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Order status check failed with status ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data && data.data) {
-        const orderData = data.data;
-        console.log("Order status response:", orderData);
-        
-        // Update order state with latest info
-        updateOrderState({
-          status: orderData.status,
-          validUntil: orderData.validUntil,
-          reference: orderData.reference,
-          lastUpdated: Date.now(),
-          // Update verifiedAddress if the order is valid
-          verifiedAddress: orderData.status === 'initiated' ? orderData.receiveAddress : null
-        });
-        
-        // Return the status
-        return orderData.status;
-      }
-      
-      return false;
-    } catch (error) {
-      console.error("Error checking order status:", error);
-      updateOrderState({ 
-        error: "Failed to check order status", 
-        isLoading: false 
-      });
-      return false;
-    } finally {
-      updateOrderState({ isLoading: false });
-    }
-  }, [orderState.id, updateOrderState]);
-
-  // Function to create a new order
-  const createNewOrder = useCallback(async (forceCreate?: boolean): Promise<string | null> => {
-    // Skip order creation if not authenticated
-    if (!authenticated) {
-      console.log("User not authenticated, skipping order creation");
-      return null;
-    }
-    
-    // For EVM wallets, we need adaptedWallet.address
-    // For Solana wallets, we just need to be authenticated and have wallet type as 'svm'
-    if (walletType === 'evm' && (!adaptedWallet || !adaptedWallet.address)) {
-      console.error("EVM wallet not ready for order creation");
-      return null;
-    }
-    
-    try {
-      updateOrderState({ isLoading: true });
-      console.log("Creating new order...");
-      
-      // Get linked bank account from localStorage
-      const linkedBankAccount = localStorage.getItem('linkedBankAccount');
-      if (!linkedBankAccount) {
-        console.error("No linked bank account found");
-        updateOrderState({ 
-          error: "No linked bank account", 
-          isLoading: false 
-        });
-        return null;
-      }
-      
-      const bankDetails = JSON.parse(linkedBankAccount);
-      console.log("Using bank details:", bankDetails);
-      
-      // Prepare order request
-      const orderRequest = {
-        bankCode: bankDetails.bankCode,
-        accountNumber: bankDetails.accountNumber,
-        accountName: bankDetails.accountName,
-        amount: 0, // Will be set by user during swap
-        email: user?.email || 'user@example.com',
-        receiveAddress: walletType === 'evm' ? adaptedWallet.address : DEFAULT_DESTINATION_ADDRESS
-      };
-      
-      console.log("Sending order request:", orderRequest);
-      
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_KEY}`
-        },
-        body: JSON.stringify(orderRequest)
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Order creation failed with status ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data && data.data) {
-        const orderData = data.data;
-        console.log("New order created:", orderData);
-        
-        // Update order state with new order details
-        updateOrderState({
-          id: orderData.id,
-          receiveAddress: orderData.receiveAddress,
-          status: orderData.status,
-          validUntil: orderData.validUntil,
-          reference: orderData.reference,
-          lastUpdated: Date.now(),
-          error: null,
-          // Set verifiedAddress since we just created this order
-          verifiedAddress: orderData.status === 'initiated' ? orderData.receiveAddress : null
-        });
-        
-        return orderData.receiveAddress;
-      }
-      
-      return null;
-    } catch (error) {
-      console.error("Error creating order:", error);
-      updateOrderState({ 
-        error: "Failed to create order", 
-        isLoading: false 
-      });
-      return null;
-    } finally {
-      updateOrderState({ isLoading: false });
-    }
-  }, [authenticated, walletType, adaptedWallet, user, updateOrderState]);
-
-  // Function to verify if a receive address is valid and associated with an initiated order
-  const verifyReceiveAddress = useCallback(async (address: string | null): Promise<boolean> => {
-    if (!address) {
-      console.log("No receive address provided for verification");
-      return false;
-    }
-    
-    console.log(`Verifying receive address: ${address}`);
-    
-    // Check if address matches current state and order is initiated
-    if (address === orderState.receiveAddress && orderState.status === 'initiated') {
-      console.log("Address matches current state with initiated status");
-      return true;
-    }
-    
-    // If we have an order ID but unknown status, check the status
-    if (orderState.id && (!orderState.status || orderState.status !== 'initiated')) {
-      console.log("Order ID exists but status is not initiated, checking status");
-      const statusResult = await checkOrderStatus();
-      // Consider valid only if status is 'initiated'
-      return statusResult === 'initiated';
-    }
-    
-    // If address doesn't match current state, check if we can find its order ID
-    if (address !== orderState.receiveAddress) {
-      console.log("Address doesn't match current state, checking localStorage");
-      
-      // Try to get order ID and address from localStorage
-      const storedOrderId = localStorage.getItem('paycrestOrderId');
-      const storedAddress = localStorage.getItem('paycrestReceiveAddress');
-      
-      if (storedOrderId && storedAddress === address) {
-        console.log("Found matching stored order ID and address, checking status");
-        
-        // Update state with stored values and check status
-        updateOrderState({
-          id: storedOrderId,
-          receiveAddress: storedAddress
-        });
-        
-        const statusResult = await checkOrderStatus();
-        // Consider valid only if status is 'initiated'
-        return statusResult === 'initiated';
-      }
-    }
-    
-    // If all checks fail, create a new order
-    console.log("Address verification failed, creating new order");
-    const newAddress = await createNewOrder();
-    return newAddress !== null;
-  }, [orderState.receiveAddress, orderState.status, orderState.id, checkOrderStatus, createNewOrder, updateOrderState]);
-
-  // Update chains when they're loaded
-  useEffect(() => {
-    if (supportedChains && !isChainsLoading) {
-      console.log("Supported chains loaded:", supportedChains)
-      setChains(supportedChains)
-    }
-  }, [supportedChains, isChainsLoading])
-  
   // Watch for changes in the receive address
   useEffect(() => {
     const checkReceiveAddress = () => {
       const storedAddress = localStorage.getItem('paycrestReceiveAddress')
       if (storedAddress && /^0x[a-fA-F0-9]{40}$/.test(storedAddress)) {
-        setOrderState(prev => ({ ...prev, receiveAddress: storedAddress }));
+        setDestinationAddress(storedAddress)
       }
     }
 
@@ -745,65 +503,49 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
       if (url.includes('api.relay') || url.includes('quote')) {
         console.log("Intercepting Relay API call:", url);
         
-        // If it has a body, enforce our destination address
-        if (init && init.body) {
-          let body;
+        // Get the current order ID and check its status
+        const orderId = localStorage.getItem('paycrestOrderId')
+        if (orderId) {
           try {
-            // Parse the body
-            const bodyText = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
-            body = JSON.parse(bodyText);
-            let modified = false;
-            
-            // FORCE the recipient in ALL places it could appear
-            // Direct recipient field
-            if (body.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting recipient in API call: ${body.recipient} → ${orderState.destinationAddress}`);
-              body.recipient = orderState.destinationAddress;
-              modified = true;
-            }
-            
-            // Check for nested recipient
-            if (body.params && body.params.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting nested recipient in API call: ${body.params.recipient} → ${orderState.destinationAddress}`);
-              body.params.recipient = orderState.destinationAddress;
-              modified = true;
-            }
-            
-            // Check for parameters.recipient
-            if (body.parameters && body.parameters.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting parameters.recipient in API call: ${body.parameters.recipient} → ${orderState.destinationAddress}`);
-              body.parameters.recipient = orderState.destinationAddress;
-              modified = true;
-            }
-            
-            // Check for user field which sometimes doubles as recipient
-            if (body.parameters && body.parameters.user && body.parameters.user !== orderState.destinationAddress) {
-              console.warn(`Correcting parameters.user in API call: ${body.parameters.user} → ${orderState.destinationAddress}`);
-              body.parameters.user = orderState.destinationAddress;
-              modified = true;
-            }
-            
-            // Check for returnAddress fields (for Paycrest API)
-            if (body.returnAddress) {
-              const validReturnAddress = getValidReturnAddress(body.returnAddress);
-              if (body.returnAddress !== validReturnAddress) {
-                console.warn(`Replacing Solana returnAddress in API call: ${body.returnAddress} → ${validReturnAddress}`);
-                body.returnAddress = validReturnAddress;
-                modified = true;
+            // Get the order details from localStorage
+            const orderData = JSON.parse(localStorage.getItem('paycrestLastOrder') || '{}')
+            if (orderData.receiveAddress) {
+              console.log(`Using receive address from order: ${orderData.receiveAddress}`)
+              // Force the correct receive address
+              if (init && init.body) {
+                let body;
+                try {
+                  const bodyText = typeof init.body === 'string' ? init.body : JSON.stringify(init.body);
+                  body = JSON.parse(bodyText);
+                  
+                  // FORCE the recipient in ALL places it could appear
+                  if (body.recipient !== orderData.receiveAddress) {
+                    console.log(`Correcting recipient in API call: ${body.recipient} → ${orderData.receiveAddress}`);
+                    body.recipient = orderData.receiveAddress;
+                  }
+                  
+                  if (body.params?.recipient !== orderData.receiveAddress) {
+                    console.log(`Correcting params.recipient in API call: ${body.params?.recipient} → ${orderData.receiveAddress}`);
+                    body.params.recipient = orderData.receiveAddress;
+                  }
+                  
+                  if (body.parameters?.recipient !== orderData.receiveAddress) {
+                    console.log(`Correcting parameters.recipient in API call: ${body.parameters?.recipient} → ${orderData.receiveAddress}`);
+                    body.parameters.recipient = orderData.receiveAddress;
+                  }
+                  
+                  init.body = JSON.stringify(body);
+                } catch (err) {
+                  console.error("Error parsing/modifying fetch body:", err);
+                }
               }
             }
-            
-            // Only replace if modified
-            if (modified) {
-              init.body = JSON.stringify(body);
-            }
           } catch (err) {
-            console.error("Error parsing/modifying fetch body:", err);
+            console.error('Error checking order details in interceptor:', err)
           }
         }
       }
       
-      // Call original fetch with possibly modified arguments
       return originalFetch.call(window, input, init);
     };
     
@@ -833,30 +575,30 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
             
             // FORCE the recipient in ALL places it could appear
             // Direct recipient field
-            if (parsedBody.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting recipient in XHR: ${parsedBody.recipient} → ${orderState.destinationAddress}`);
-              parsedBody.recipient = orderState.destinationAddress;
+            if (parsedBody.recipient !== destinationAddress) {
+              console.warn(`Correcting recipient in XHR: ${parsedBody.recipient} → ${destinationAddress}`);
+              parsedBody.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for nested recipient in params
-            if (parsedBody.params && parsedBody.params.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting nested recipient in XHR: ${parsedBody.params.recipient} → ${orderState.destinationAddress}`);
-              parsedBody.params.recipient = orderState.destinationAddress;
+            if (parsedBody.params && parsedBody.params.recipient !== destinationAddress) {
+              console.warn(`Correcting nested recipient in XHR: ${parsedBody.params.recipient} → ${destinationAddress}`);
+              parsedBody.params.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for parameters.recipient
-            if (parsedBody.parameters && parsedBody.parameters.recipient !== orderState.destinationAddress) {
-              console.warn(`Correcting parameters.recipient in XHR: ${parsedBody.parameters.recipient} → ${orderState.destinationAddress}`);
-              parsedBody.parameters.recipient = orderState.destinationAddress;
+            if (parsedBody.parameters && parsedBody.parameters.recipient !== destinationAddress) {
+              console.warn(`Correcting parameters.recipient in XHR: ${parsedBody.parameters.recipient} → ${destinationAddress}`);
+              parsedBody.parameters.recipient = destinationAddress;
               modified = true;
             }
             
             // Check for user field
-            if (parsedBody.parameters && parsedBody.parameters.user && parsedBody.parameters.user !== orderState.destinationAddress) {
-              console.warn(`Correcting parameters.user in XHR: ${parsedBody.parameters.user} → ${orderState.destinationAddress}`);
-              parsedBody.parameters.user = orderState.destinationAddress;
+            if (parsedBody.parameters && parsedBody.parameters.user && parsedBody.parameters.user !== destinationAddress) {
+              console.warn(`Correcting parameters.user in XHR: ${parsedBody.parameters.user} → ${destinationAddress}`);
+              parsedBody.parameters.user = destinationAddress;
               modified = true;
             }
             
@@ -895,30 +637,30 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
           
           // FORCE the recipient in ALL places it could appear
           // Direct recipient field
-          if (config.data.recipient !== orderState.destinationAddress) {
-            console.warn(`Correcting recipient in Axios: ${config.data.recipient} → ${orderState.destinationAddress}`);
-            config.data.recipient = orderState.destinationAddress;
+          if (config.data.recipient !== destinationAddress) {
+            console.warn(`Correcting recipient in Axios: ${config.data.recipient} → ${destinationAddress}`);
+            config.data.recipient = destinationAddress;
             modified = true;
           }
           
           // Check for nested recipient in params
-          if (config.data.params && config.data.params.recipient !== orderState.destinationAddress) {
-            console.warn(`Correcting nested params.recipient in Axios: ${config.data.params.recipient} → ${orderState.destinationAddress}`);
-            config.data.params.recipient = orderState.destinationAddress;
+          if (config.data.params && config.data.params.recipient !== destinationAddress) {
+            console.warn(`Correcting nested params.recipient in Axios: ${config.data.params.recipient} → ${destinationAddress}`);
+            config.data.params.recipient = destinationAddress;
             modified = true;
           }
           
           // Check for parameters.recipient
-          if (config.data.parameters && config.data.parameters.recipient !== orderState.destinationAddress) {
-            console.warn(`Correcting parameters.recipient in Axios: ${config.data.parameters.recipient} → ${orderState.destinationAddress}`);
-            config.data.parameters.recipient = orderState.destinationAddress;
+          if (config.data.parameters && config.data.parameters.recipient !== destinationAddress) {
+            console.warn(`Correcting parameters.recipient in Axios: ${config.data.parameters.recipient} → ${destinationAddress}`);
+            config.data.parameters.recipient = destinationAddress;
             modified = true;
           }
           
           // Check for user field
-          if (config.data.parameters && config.data.parameters.user && config.data.parameters.user !== orderState.destinationAddress) {
-            console.warn(`Correcting parameters.user in Axios: ${config.data.parameters.user} → ${orderState.destinationAddress}`);
-            config.data.parameters.user = orderState.destinationAddress;
+          if (config.data.parameters && config.data.parameters.user && config.data.parameters.user !== destinationAddress) {
+            console.warn(`Correcting parameters.user in Axios: ${config.data.parameters.user} → ${destinationAddress}`);
+            config.data.parameters.user = destinationAddress;
             modified = true;
           }
           
@@ -951,7 +693,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
       
       console.log("Network interceptors removed");
     };
-  }, [orderState.destinationAddress]);
+  }, [destinationAddress]);
     
     // Function to update Naira amount based on output field
     const updateNairaAmount = () => {
@@ -1052,182 +794,66 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
   // Watch for changes in the destination address, whether from a new order or storage update 
   useEffect(() => {
     // When destination address changes, also ensure the SwapWidget knows about it
-    if (orderState.destinationAddress && orderState.destinationAddress !== DEFAULT_DESTINATION_ADDRESS) {
-      console.log('Destination address updated in component state:', orderState.destinationAddress)
+    if (destinationAddress && destinationAddress !== DEFAULT_DESTINATION_ADDRESS) {
+      console.log('Destination address updated in component state:', destinationAddress)
       
       // Update any UI elements that need the current destination address
       // This helps ensure the address is consistent across the component
     }
-  }, [orderState.destinationAddress])
+  }, [destinationAddress])
 
   // After swap success, update the widget display
   useEffect(() => {
     // Update the quotes whenever the order status changes
-    if (orderState.status === 'initiated') {
+    if (orderStatus === 'valid') {
       // Slight delay to ensure all state updates have propagated
       setTimeout(() => {
         // Trigger an update to refresh display values
         updateNairaAmount()
       }, 500)
     }
-  }, [orderState.status])
+  }, [orderStatus])
 
-  // Improved handleSwapSuccess function
-  const handleSwapSuccess = useCallback(async () => {
-    console.log('[handleSwapSuccess] Swap completed successfully');
-    
-    // Log current state for debugging
-    console.log('[handleSwapSuccess] Current state:', {
-      authenticated,
-      walletType,
-      hasWallet: !!adaptedWallet,
-      orderState: {
-        id: orderState.id,
-        status: orderState.status,
-        receiveAddress: orderState.receiveAddress,
-        lastUpdated: new Date(orderState.lastUpdated).toLocaleTimeString()
-      }
-    });
-    
-    // Get bank details from localStorage
-    const storedBank = localStorage.getItem('linkedBankAccount');
-    if (!storedBank) {
-      console.error('[handleSwapSuccess] No bank details found, cannot process swap');
-      return;
-    }
+  // Update handleSwapSuccess to prepare the transaction but don't show it yet
+  async function handleSwapSuccess(data: any) {
+    console.log('handleSwapSuccess function started')
     
     try {
-      const bankDetails = JSON.parse(storedBank);
-      console.log('[handleSwapSuccess] Bank details found:', bankDetails);
-      
       // Force create new order after successful swap
-      console.log('[handleSwapSuccess] Creating new order for this transaction...');
-      const newAddress = await createNewOrder(true);
+      console.log('Creating new order after swap success')
+      await createNewOrder(true)
       
-      if (!newAddress) {
-        console.error('[handleSwapSuccess] Failed to create new order after swap');
-        return;
+      // Get stored bank details
+      const storedBank = localStorage.getItem('linkedBankAccount')
+      const bankDetails = storedBank ? JSON.parse(storedBank) : null
+      
+      // Get current order details
+      const currentOrderData = localStorage.getItem('paycrestLastOrder')
+      const orderData = currentOrderData ? JSON.parse(currentOrderData) : null
+      
+      // Store transaction details but don't show popup yet
+      if (orderData) {
+        setPendingTransaction({
+          orderId: orderData.id,
+          originToken: {
+            symbol: data?.steps?.[0]?.fromToken?.symbol || 'Unknown',
+            amount: data?.steps?.[0]?.fromAmount || '0'
+          },
+          usdcAmount: orderData.amount,
+          nairaAmount: (parseFloat(orderData.amount) * paycrestRate).toFixed(2),
+          bankDetails: bankDetails
+        });
       }
       
-      console.log('[handleSwapSuccess] New receive address created:', newAddress);
-      
-      // Get the current order ID
-      if (!orderState.id) {
-        console.error('[handleSwapSuccess] No order ID available after order creation');
-        return;
-      }
-      
-      // Create bank account object from stored details
-      const bankAccount: BankAccount = {
-            currency: 'NGN',
-        institution: bankDetails.institution,
-        accountIdentifier: bankDetails.accountIdentifier,
-            accountName: bankDetails.accountName || '',
-            memo: 'DirectPay Offramp'
-      };
-      
-      // Create transaction record with the correct status type
-      const transaction: TransactionStatus = {
-        id: orderState.id,
-        amount: outputValue.toString(),
-        nairaAmount: nairaAmount,
-        bankAccount: bankAccount,
-        status: 'initiated', // Use the string literal type directly
-        timestamp: Date.now(),
-        token: 'USDC',
-        rate: paycrestRate.toString(),
-        network: 'base'
-      };
-      
-      console.log('[handleSwapSuccess] Created transaction record:', transaction);
-        
-      // Update transaction history but don't show modal
-      setTransactionHistory(prev => [...prev, transaction]);
-      
-      // Don't store transaction or show modal
-      // setCurrentTransaction(transaction);
-      // setShowTransactionStatus(true);
-        
-        // Start polling for status updates
-        const pollInterval = setInterval(async () => {
-          try {
-          if (!orderState.id) {
-            clearInterval(pollInterval);
-            return;
-          }
-          
-          console.log('[handleSwapSuccess] Polling order status for:', orderState.id);
-          const statusResult = await checkOrderStatus(orderState.id);
-          
-          // Only proceed if we got a valid status string (not false)
-          if (typeof statusResult === 'string') {
-            const status = statusResult as 'initiated' | 'settled' | 'refunded' | 'expired';
-            
-            if (status !== 'initiated') {
-              clearInterval(pollInterval);
-              console.log(`[handleSwapSuccess] Order status changed to: ${status}`);
-              
-              // Update transaction status with the correct type
-              setTransactionHistory(prev => 
-                prev.map(tx => 
-                  tx.id === orderState.id 
-                  ? { ...tx, status } // Now status is correctly typed
-                  : tx
-                )
-              );
-                
-              // Don't update current transaction since we're not showing the modal
-              // if (currentTransaction?.id === orderState.id) {
-              //   setCurrentTransaction((prev: TransactionStatus | null) => 
-              //     prev ? { ...prev, status } : null
-              //   );
-              // }
-                
-              // If status is not settled, create new order
-              if (status !== 'settled') {
-                console.log('[handleSwapSuccess] Order not settled, creating new order');
-                await createNewOrder(true);
-              }
-              }
-            }
-          } catch (error) {
-          console.error('[handleSwapSuccess] Error polling order status:', error);
-          clearInterval(pollInterval);
-          }
-      }, 5000); // Poll every 5 seconds
-        
-        // Stop polling after 5 minutes
-      setTimeout(() => {
-        clearInterval(pollInterval);
-        console.log('[handleSwapSuccess] Order status polling stopped after timeout');
-      }, 5 * 60 * 1000);
-      
-      // If we have a parent success callback, also call it
+      // If we have a parent success callback, call it
       if (onSwapSuccess) {
-        console.log('[handleSwapSuccess] Calling parent swap success handler');
-        await onSwapSuccess(bankDetails);
+        console.log('Calling parent swap success handler')
+        await onSwapSuccess(bankDetails)
       }
-      
-      console.log('[handleSwapSuccess] Swap handling completed successfully');
     } catch (error) {
-      console.error('[handleSwapSuccess] Error handling swap success:', error);
+      console.error('Failed to create new order after swap:', error)
     }
-  }, [
-    authenticated, 
-    walletType, 
-    adaptedWallet, 
-    orderState.id, 
-    orderState.status, 
-    orderState.receiveAddress, 
-    orderState.lastUpdated,
-    createNewOrder,
-    checkOrderStatus,
-    outputValue,
-    nairaAmount,
-    paycrestRate,
-    currentTransaction,
-    onSwapSuccess
-  ]);
+  }
 
   async function handleWalletConnection(connectorType?: string) {
     console.log("Wallet connection requested, type:", connectorType);
@@ -1249,194 +875,93 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
     }
   }
 
-  // Add this effect to handle wallet balance display
-  useEffect(() => {
-    if (adaptedWallet && walletType) {
-      // Force a refresh of the wallet balance display
-      const refreshBalance = () => {
-        const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
-        balanceElements.forEach(element => {
-          if (element.textContent?.includes('Balance:')) {
-            // Trigger a re-render by updating the element
-            element.setAttribute('data-balance-updated', Date.now().toString());
-          }
-        });
-      };
+  function handleAnalyticEvent(e: any) {
+    if (!e || !e.eventName) return
 
-      // Initial refresh
-      refreshBalance();
+    console.log('[Widget Event]', e.eventName, e.data)
 
-      // Set up periodic refresh
-      const interval = setInterval(refreshBalance, 2000);
-      return () => clearInterval(interval);
+    if (e.eventName === 'QUOTE_REQUESTED' && e.data && e.data.parameters) {
+      const storedReceiveAddress = localStorage.getItem('paycrestReceiveAddress');
+      if (storedReceiveAddress) {
+        console.log(`Setting recipient in quote request to Paycrest receive address:`, storedReceiveAddress);
+        e.data.parameters.recipient = storedReceiveAddress;
+      } else {
+        console.warn('No Paycrest receive address found for quote request');
+      }
     }
-  }, [adaptedWallet, walletType]);
-
-  // Monitor bank account changes and force order refresh
-  useEffect(() => {
-    let previousBankDetails: string | null = null;
     
-    const checkBankChanges = () => {
-      const currentBankDetails = localStorage.getItem('linkedBankAccount');
+    if (e.eventName === 'SWAP_SUCCESS') {
+      console.log("SWAP_SUCCESS EVENT DETECTED")
+      console.log("Swap success data:", JSON.stringify(e.data, null, 2))
+      setSwapSuccessOccurred(true)
+      handleSwapSuccess(e.data)
+    }
+
+    if (e.eventName === 'SWAP_MODAL_CLOSED') {
+      console.log('SWAP_MODAL_CLOSED event detected')
       
-      // If we have bank details and they've changed
-      if (currentBankDetails && currentBankDetails !== previousBankDetails) {
-        // If this isn't the first check (previousBankDetails was set)
-        if (previousBankDetails !== null) {
-          console.log('[bankMonitor] Bank account changed, forcing new order creation');
-          
-          try {
-            const oldDetails = previousBankDetails ? JSON.parse(previousBankDetails) : null;
-            const newDetails = JSON.parse(currentBankDetails);
+      // If we have a pending transaction and this follows a swap success, show the transaction popup
+      if (swapSuccessOccurred && pendingTransaction) {
+        console.log('Showing transaction status popup after modal close')
+        setCurrentTransaction(pendingTransaction)
+        setShowTransactionStatus(true)
+        setPendingTransaction(null) // Clear pending transaction
+        setSwapSuccessOccurred(false) // Reset success flag
+      }
+      
+      // Handle logout after delay
+      if (swapSuccessOccurred) {
+        setTimeout(() => {
+          if (authenticated && logout) {
+            // Clear local storage
+            localStorage.removeItem('paycrestReceiveAddress')
+            localStorage.removeItem('paycrestOrderId')
+            localStorage.removeItem('paycrestReference')
+            localStorage.removeItem('paycrestValidUntil')
+            localStorage.removeItem('lastOrderTimestamp')
             
-            console.log('[bankMonitor] Bank change details:', {
-              from: oldDetails ? `${oldDetails.institution} / ${oldDetails.accountIdentifier}` : 'none',
-              to: `${newDetails.institution} / ${newDetails.accountIdentifier}`
-            });
-            
-            // Force a new order creation
-            createNewOrder(true).catch(err => {
-              console.error('[bankMonitor] Failed to create new order after bank change:', err);
-            });
-          } catch (err) {
-            console.error('[bankMonitor] Error processing bank change:', err);
+            // Log the user out
+            logout()
+              .then(() => {
+                console.log('User logged out successfully after swap')
+                window.location.reload()
+              })
+              .catch(err => {
+                console.error('Failed to log out user:', err)
+              })
           }
+        }, 1000)
+      }
+    }
+    
+    // Handle wallet selector events
+    if (e.eventName === 'WALLET_SELECTOR_SELECT') {
+      console.log("Wallet selector triggered:", e.data)
+      if (e.data && e.data.context === 'not_connected') {
+        console.log("Initiating wallet connection flow")
+        
+        if (e.data.wallet_type && 
+            (e.data.wallet_type.toLowerCase().includes('solana') ||
+             e.data.wallet_type.toLowerCase().includes('phantom') ||
+             e.data.wallet_type.toLowerCase().includes('svm'))) {
+          console.log("Setting wallet type to Solana")
+          setWalletType('svm')
         }
         
-        // Update our reference
-        previousBankDetails = currentBankDetails;
-      }
-    };
-    
-    // Initial check
-    checkBankChanges();
-    
-    // Set up interval to check for changes
-    const interval = setInterval(checkBankChanges, 2000); // Check every 2 seconds
-    
-    // Also listen for storage events from other tabs
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'linkedBankAccount') {
-        checkBankChanges();
-      }
-    };
-    
-    window.addEventListener('storage', handleStorageChange);
-    
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('storage', handleStorageChange);
-    };
-  }, [createNewOrder]);
-
-  // Add a direct handler for bank account changes that can be exposed to parent components
-  const handleBankAccountChange = useCallback(async (newBankDetails: any) => {
-    console.log('[handleBankAccountChange] Bank account changed directly, refreshing order');
-    
-    // Call the prop callback if provided
-    if (onBankAccountChange) {
-      onBankAccountChange(newBankDetails);
-    }
-    
-    // Force a new order creation with the new bank details
-    try {
-      // Small delay to ensure localStorage is updated first
-      setTimeout(async () => {
-        const result = await createNewOrder(true);
-        console.log('[handleBankAccountChange] New order created:', result ? 'success' : 'failed');
-      }, 100);
-    } catch (err) {
-      console.error('[handleBankAccountChange] Error creating new order:', err);
-    }
-  }, [createNewOrder, onBankAccountChange]);
-  
-  // Expose the bank account change handler to parent components via ref
-  useEffect(() => {
-    // If the component has an onBankAccountChange prop, register our handler
-    if (onBankAccountChange) {
-      // We can expose this function to parent components if needed
-      (window as any).handleDirectPayBankChange = handleBankAccountChange;
-    }
-    
-    return () => {
-      // Clean up when component unmounts
-      delete (window as any).handleDirectPayBankChange;
-    };
-  }, [handleBankAccountChange, onBankAccountChange]);
-
-  // Handle analytics events
-  const handleAnalyticEvent = useCallback(async (event: any) => {
-    console.log('Analytics event:', event)
-    
-    // Handle quote requested events to ensure correct recipient address
-    if (event.type === 'QUOTE_REQUESTED') {
-      console.log('Quote requested event detected')
-      
-      // Verify receive address before setting it as recipient
-      if (event.payload && event.payload.params) {
-        try {
-          // Check if we have a valid order with the current receive address
-          if (orderState.id && orderState.receiveAddress && orderState.status === 'initiated') {
-            console.log(`Using current valid address: ${orderState.destinationAddress}`);
-            // Set the recipient in the quote request
-            event.payload.params.recipient = orderState.destinationAddress;
-          } else {
-            console.log('No valid order found, checking order status or creating new order');
-            
-            // If we have an order ID but status is not initiated, check status
-            if (orderState.id) {
-              const statusResult = await checkOrderStatus();
-              
-              // If status is now valid, use current address
-              if (statusResult === 'initiated') {
-                console.log(`Order status checked and valid, using address: ${orderState.destinationAddress}`);
-                event.payload.params.recipient = orderState.destinationAddress;
-              } else {
-                // Create new order if status check failed
-                console.log('Order status check failed, creating new order');
-                const newAddress = await createNewOrder();
-                if (newAddress) {
-                  console.log(`Using new address from created order: ${newAddress}`);
-                  event.payload.params.recipient = newAddress;
-                }
-              }
-            } else {
-              // No order ID, create new order
-              console.log('No order ID found, creating new order');
-              const newAddress = await createNewOrder();
-              if (newAddress) {
-                console.log(`Using new address from created order: ${newAddress}`);
-                event.payload.params.recipient = newAddress;
-              }
-            }
-          }
-        } catch (error) {
-          console.error('Error during address verification:', error);
-        }
+        handleWalletConnection(e.data.wallet_type)
       }
     }
     
-    // Handle swap success events
-    if (event.type === 'SWAP_SUCCESS') {
-      console.log('Swap success event detected')
-      setSwapSuccessOccurred(true)
-      
-      // Call onSwapSuccess if provided
-      if (onSwapSuccess && typeof onSwapSuccess === 'function') {
-        onSwapSuccess(event)
-      }
-      
-      // Don't show transaction status modal or set current transaction
-      // setShowTransactionStatus(true)
-      // setCurrentTransaction(event.payload)
-    }
-  }, [orderState.id, orderState.receiveAddress, orderState.status, orderState.destinationAddress, checkOrderStatus, createNewOrder, onSwapSuccess])
+    // Dispatch custom event for external listeners
+    const customEvent = new CustomEvent('relay-analytic', { detail: { eventName: e.eventName, data: e.data } })
+    window.dispatchEvent(customEvent)
+  }
 
   // Setup event listeners
   useEffect(() => {
-    window.addEventListener('relay-analytic', handleAnalyticEvent);
-    return () => window.removeEventListener('relay-analytic', handleAnalyticEvent);
-  }, [handleAnalyticEvent]);
+    window.addEventListener('relay-analytic', handleAnalyticEvent)
+    return () => window.removeEventListener('relay-analytic', handleAnalyticEvent)
+  }, [])
 
   // Hide the output field - run this only once after mounting
   useLayoutEffect(() => {
@@ -1491,27 +1016,36 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
           const receiveSection = element.closest('.relay-d_flex.relay-items_center.relay-justify_space-between.relay-w_100\\%');
           if (receiveSection) {
             (receiveSection as HTMLElement).style.display = 'none';
-            console.log('Hid Receive section');
           }
         }
       });
 
-      // Update USDC to NGN for specific div
-      const amountDivs = document.querySelectorAll('.relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center .relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_16px');
-      amountDivs.forEach(div => {
-        const text = div.textContent || '';
-        if (text.includes('USDC')) {
-          const match = text.match(/([\d.]+)\s*USDC/);
-          if (match && match[1]) {
-            const usdcAmount = parseFloat(match[1]);
-            if (!isNaN(usdcAmount)) {
-              const ngnAmount = usdcAmount * paycrestRate;
-              const formattedNgn = ngnAmount.toLocaleString('en-NG', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-              });
-              div.textContent = `${formattedNgn}`;
-              console.log(`Converted ${usdcAmount} USDC to ${formattedNgn} NGN`);
+      // Handle token display and conversion
+      const tokenDisplayDivs = document.querySelectorAll('.relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center');
+      tokenDisplayDivs.forEach((div, index) => {
+        const imgElements = div.querySelectorAll('img');
+        const amountElement = div.querySelector('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_16px');
+        
+        if (!amountElement) return;
+
+        const isUSDC = imgElements[0]?.src.includes('usdc.png');
+        const isBase = imgElements[1]?.src.includes('8453');
+        
+        // If this is USDC on Base chain
+        if (isUSDC && isBase) {
+          const amount = parseFloat(amountElement.textContent?.replace(/,/g, '') || '0');
+          
+          // For the second div (output/receive side), convert to Naira and show Naira flag
+          if (index === 1) {
+            const ngnAmount = amount * paycrestRate;
+            amountElement.textContent = ngnAmount.toLocaleString('en-NG', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+            });
+            
+            // Change only the token logo to Naira flag
+            if (imgElements[0]) {
+              imgElements[0].src = 'https://crossbow.noblocks.xyz/_next/image?url=https%3A%2F%2Fflagcdn.com%2Fh24%2Fng.webp&w=48&q=75';
             }
           }
         }
@@ -1532,7 +1066,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
                 maximumFractionDigits: 2
               });
               div.textContent = `1 ZK = ${formattedNgn}`;
-              console.log(`Converted 1 ZK = ${zkValue} NGN to 1 ZK = ${formattedNgn} NGN`);
             }
           }
         }
@@ -1542,7 +1075,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
       const divsToRemove = document.querySelectorAll('.relay-d_flex.relay-items_center.relay-justify_space-between.relay-gap_3.relay-w_100\\%.__web-inspector-hide-shortcut__');
       divsToRemove.forEach(div => {
         div.remove();
-        console.log('Removed div with __web-inspector-hide-shortcut__ to collapse space');
       });
     };
 
@@ -1554,108 +1086,6 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
       });
 
       observer.observe(document.body, { childList: true, subtree: true });
-
-      window.addEventListener('unload', () => {
-        if (observer) {
-          observer.disconnect();
-          observer = null;
-          console.log('MutationObserver disconnected');
-        }
-      });
-    }, 500);
-
-    return () => {
-      clearTimeout(timer);
-      if (observer) {
-        observer.disconnect();
-        observer = null;
-      }
-    };
-  }, [paycrestRate]);
-
-  // Setup MutationObserver for text replacement, conversions, and div removal
-  useEffect(() => {
-    let observer: MutationObserver | null = null;
-
-    const updateRates = () => {
-      // Find all rate elements
-      const rateElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
-      rateElements.forEach(element => {
-        // Skip if already processed
-        if (element.getAttribute('data-rate-processed') === 'true') {
-          return;
-        }
-        
-        const text = element.textContent || '';
-        // Match pattern like "1 TOKEN = X.YYYY"
-        const match = text.match(/1\s+(\w+)\s*=\s*([\d.]+)\s*/);
-        if (match) {
-          const [_, token, rate] = match;
-          const numRate = parseFloat(rate);
-          if (!isNaN(numRate)) {
-            const newRate = numRate * paycrestRate;
-            const formattedRate = newRate.toLocaleString('en-NG', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2
-            });
-            element.textContent = `1 ${token} = ${formattedRate}`;
-            // Mark as processed to prevent infinite multiplication
-            element.setAttribute('data-rate-processed', 'true');
-          }
-        }
-      });
-
-      // Update NGN amount elements (the ones with the long class chain)
-      const ngnAmountElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_700.relay-fs_16px.relay-text-overflow_ellipsis.relay-overflow_hidden.relay-white-space_nowrap.relay-leading_20px');
-      ngnAmountElements.forEach(element => {
-        // Skip if already processed
-        if (element.getAttribute('data-amount-processed') === 'true') {
-          return;
-        }
-        
-        const text = element.textContent || '';
-        if (text.includes('NGN')) {
-          // Extract number from text like "0.136456 NGN"
-          const match = text.match(/([\d.]+)\s*NGN/);
-          if (match && match[1]) {
-            const amount = parseFloat(match[1]);
-            if (!isNaN(amount)) {
-              const newAmount = amount * paycrestRate;
-              const formattedAmount = newAmount.toLocaleString('en-NG', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 6
-              });
-              element.textContent = `${formattedAmount}`;
-              // Mark as processed to prevent infinite multiplication
-              element.setAttribute('data-amount-processed', 'true');
-              console.log(`Converted NGN amount from ${amount} to ${formattedAmount}`);
-            }
-          }
-        }
-      });
-
-      // Change Base to DirectPay
-      const baseElements = document.querySelectorAll('.relay-text_text-subtle.relay-font_body.relay-fw_500.relay-fs_14px');
-      baseElements.forEach(element => {
-        if (element.textContent === 'Base') {
-          element.textContent = 'DirectPay';
-        }
-      });
-    };
-
-    const timer = setTimeout(() => {
-      updateRates();
-      
-      observer = new MutationObserver(() => {
-        updateRates();
-      });
-
-      observer.observe(document.body, { 
-        childList: true, 
-        subtree: true,
-        characterData: true,
-        characterDataOldValue: true
-      });
 
       window.addEventListener('unload', () => {
         if (observer) {
@@ -1679,7 +1109,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
     // Check for stored timestamp
     const storedTimestamp = localStorage.getItem('lastOrderTimestamp')
     if (storedTimestamp) {
-      setOrderState(prev => ({ ...prev, lastUpdated: parseInt(storedTimestamp) }));
+      setLastOrderTime(parseInt(storedTimestamp))
     }
   }, [])
 
@@ -1739,255 +1169,539 @@ export default function SwapWidgetWrapper({ onSwapSuccess, onBankAccountChange }
     }
   }
 
-  // Add new state for transaction tracking
-  const [transactionHistory, setTransactionHistory] = useState<TransactionStatus[]>([]);
-
-  // Check order validity on mount and create a new one if expired
-  useEffect(() => {
-    const validateExistingOrder = async () => {
-      // If we have an order ID but no status check, verify it
-      if (orderState.id && !orderState.status) {
-        console.log("[validateExistingOrder] Found existing order, checking validity:", orderState.id);
-        const statusResult = await checkOrderStatus();
+  // Function to check Paycrest order status
+  async function checkOrderStatus(orderId: string): Promise<OrderStatus> {
+    try {
+      console.log(`[checkOrderStatus] Checking status for order ID: ${orderId}`)
+      
+      const response = await fetch(`/api/check-order-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ orderId })
+      })
+      
+      if (!response.ok) {
+        console.error(`[checkOrderStatus] Failed to fetch order status. Status: ${response.status}`)
+        const errorText = await response.text()
+        console.error('[checkOrderStatus] Error response:', errorText)
+        // Return expired on API errors to trigger new order creation
+        return 'expired'
+      }
+      
+      const data = await response.json()
+      
+      if (data.status === 'success' && data.data) {
+        const orderStatus = data.data.status as OrderStatus
+        console.log(`[checkOrderStatus] Order ${orderId} status:`, orderStatus, data.data)
         
-        if (statusResult !== 'initiated') {
-          console.log("[validateExistingOrder] Existing order is not valid:", statusResult);
+        // Update local storage with latest status
+        localStorage.setItem('paycrestOrderStatus', orderStatus)
+        
+        // Clear order data if expired
+        if (orderStatus === 'expired') {
+          console.log('[checkOrderStatus] Order expired, clearing local storage')
+          localStorage.removeItem('paycrestOrderId')
+          localStorage.removeItem('paycrestReceiveAddress')
+          localStorage.removeItem('paycrestReference')
+          localStorage.removeItem('paycrestValidUntil')
+          localStorage.removeItem('lastOrderTimestamp')
+        }
+        
+        return orderStatus
+      }
+      
+      console.warn(`[checkOrderStatus] Invalid response:`, data)
+      // Return expired on invalid response to trigger new order creation
+      return 'expired'
+    } catch (error) {
+      console.error(`[checkOrderStatus] Error:`, error)
+      // Return expired on errors to trigger new order creation
+      return 'expired'
+    }
+  }
+
+  // Update createNewOrder function to use new API key
+  const createNewOrder = async (forceCreate = false) => {
+    try {
+      // Get bank details from localStorage
+      const storedBank = localStorage.getItem('linkedBankAccount')
+      if (!storedBank) {
+        console.error('[createNewOrder] No bank details found, cannot create order')
+        return null
+      }
+      
+      const bankDetails = JSON.parse(storedBank)
+      console.log('[createNewOrder] Bank details from localStorage:', bankDetails)
+      
+      // Diagnostic log for wallet state
+      console.log('[createNewOrder] walletType:', walletType, 'adaptedWallet:', adaptedWallet)
+      
+      // Skip wallet checks if we're forcing order creation
+      if (!forceCreate) {
+        // For EVM, require adaptedWallet.address
+        if (walletType === 'evm' && (!adaptedWallet || !adaptedWallet.address)) {
+          console.error('[createNewOrder] EVM wallet not ready or address missing, skipping order creation');
+          return null;
+        }
+        // For Solana, just require walletType === 'svm' and authenticated
+        if (walletType === 'svm' && !authenticated) {
+          console.error('[createNewOrder] Solana wallet not authenticated, skipping order creation');
+          return null;
+        }
+      }
+      
+      // Get current time and check if we need a new order
+      const now = Date.now()
+      const lastOrderTime = parseInt(localStorage.getItem('lastOrderTimestamp') || '0')
+      
+      // Only check for existing order if not forced to create a new one
+      if (!forceCreate) {
+        // If it hasn't been 1 minute since the last order was created
+        if (now - lastOrderTime < ORDER_REFRESH_INTERVAL) {
+          // Check if we already have a valid order
+          const storedAddress = localStorage.getItem('paycrestReceiveAddress')
+          const storedOrderId = localStorage.getItem('paycrestOrderId')
           
-          // Clear the expired order
-          clearOrderState();
+          if (storedAddress && storedOrderId) {
+            console.log('[createNewOrder] Using existing valid order:', storedOrderId)
+            setDestinationAddress(storedAddress)
+            return storedAddress
+          }
+        }
+      }
+      
+      // If we reach here, either forceCreate is true or we need a new order
+      console.log('[createNewOrder] Creating new Paycrest order', forceCreate ? '(forced)' : '')
+      
+      try {
+        console.log('[createNewOrder] Fetching account details and rate...')
+        const [accountNameResponse, nairaRateResponse] = await Promise.all([
+          fetch('/api/verify-account', {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              institution: bankDetails.code || bankDetails.institution,
+              accountIdentifier: bankDetails.accountIdentifier
+            })
+          }),
+          fetch('/api/get-rate', {
+            headers: { 
+              "Content-Type": "application/json"
+            }
+          })
+        ])
+
+        // Log responses
+        console.log('[createNewOrder] Account verification response:', {
+          status: accountNameResponse.status,
+          ok: accountNameResponse.ok
+        })
+        console.log('[createNewOrder] Rate response:', {
+          status: nairaRateResponse.status,
+          ok: nairaRateResponse.ok
+        })
+        
+        if (!accountNameResponse.ok || !nairaRateResponse.ok) {
+          const accountError = await accountNameResponse.text().catch(() => 'Failed to get error text')
+          const rateError = await nairaRateResponse.text().catch(() => 'Failed to get error text')
+          console.error('[createNewOrder] API responses failed:', {
+            accountError,
+            rateError
+          })
+          throw new Error("Failed to fetch account details or rate")
+        }
+        
+        const accountData = await accountNameResponse.json()
+        const rateData = await nairaRateResponse.json()
+        
+        console.log('[createNewOrder] Account data:', accountData)
+        console.log('[createNewOrder] Rate data:', rateData)
+        
+        if (!accountData.data || !rateData.data) {
+          console.error('[createNewOrder] Invalid response from API:', {
+            accountData,
+            rateData
+          })
+          return null
+        }
+        
+        const accountName = accountData.data?.accountName || bankDetails.accountName || "Unknown Account"
+        const rate = rateData.data || DEFAULT_RATE
+        
+        // Create order with the required payload format
+        const orderPayload = {
+          amount: 0.5, // Minimum amount for order creation
+          token: "USDC",
+          rate: rate,
+          network: "base", // Using base network for USDC
+          recipient: {
+            institution: bankDetails.code || bankDetails.institution,
+            accountIdentifier: bankDetails.accountIdentifier,
+            accountName: accountName,
+            memo: "Payment via DirectPay"
+          },
+          returnAddress: walletType === 'evm' && connectedAddress ? connectedAddress : DEFAULT_DESTINATION_ADDRESS,
+          reference: `directpay-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+        }
+        
+        console.log('[createNewOrder] Sending order payload:', orderPayload)
+        
+        const orderResponse = await fetch('/api/create-order', {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(orderPayload)
+        })
+
+        // Log the raw response
+        console.log('[createNewOrder] Order response status:', orderResponse.status);
+        const responseText = await orderResponse.text();
+        console.log('[createNewOrder] Order response text:', responseText);
+        
+        if (!orderResponse.ok) {
+          console.error('[createNewOrder] Failed to create order:', {
+            status: orderResponse.status,
+            response: responseText
+          });
+          return null;
+        }
+        
+        const orderData: PaycrestOrderResponse = JSON.parse(responseText);
+        console.log('[createNewOrder] Parsed order response:', orderData);
+        
+        if (!orderData.data) {
+          console.error('[createNewOrder] Order creation failed:', orderData.message || 'Unknown error')
+          return null
+        }
+        
+        // Store comprehensive order details for later use
+        const lastOrderDetails = {
+          ...orderData.data,
+          orderPayload: orderPayload
+        };
+        localStorage.setItem('paycrestLastOrder', JSON.stringify(lastOrderDetails));
+        
+        // Store order details including ID
+        if (orderData.data.id) {
+          localStorage.setItem('paycrestOrderId', orderData.data.id);
           
-          // Create a new order if user is authenticated
-          if (authenticated && (walletType === 'svm' || (walletType === 'evm' && adaptedWallet))) {
-            console.log("[validateExistingOrder] Creating new order to replace expired one");
-            await createNewOrder(true);
+          // Store and use the receive address from the order
+          if (orderData.data.receiveAddress) {
+            console.log('[createNewOrder] Setting receive address:', orderData.data.receiveAddress);
+            localStorage.setItem('paycrestReceiveAddress', orderData.data.receiveAddress);
+            setDestinationAddress(orderData.data.receiveAddress);
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'paycrestReceiveAddress',
+              newValue: orderData.data.receiveAddress
+            }));
           } else {
-            console.log("[validateExistingOrder] User not authenticated or wallet not ready, will create order later");
+            console.error('[createNewOrder] API response missing receive address!');
+            return null;
           }
         } else {
-          console.log("[validateExistingOrder] Existing order is valid");
+          console.error('[createNewOrder] API response missing order ID!');
+          return null;
         }
-      } else if (!orderState.id && authenticated) {
-        // No order exists but user is authenticated, create one
-        console.log("[validateExistingOrder] No existing order found, creating new one");
-        if (walletType === 'svm' || (walletType === 'evm' && adaptedWallet)) {
-          await createNewOrder();
-        }
-      }
-    };
-    
-    // Run validation after a short delay to ensure wallet is initialized
-    const timer = setTimeout(() => {
-      validateExistingOrder().catch(err => {
-        console.error("[validateExistingOrder] Error validating order:", err);
-      });
-    }, 1000);
-    
-    return () => clearTimeout(timer);
-  }, [orderState.id, orderState.status, authenticated, walletType, adaptedWallet, checkOrderStatus, createNewOrder, clearOrderState]);
-
-  // Also check order validity based on timestamp
-  useEffect(() => {
-    // Check if the order is likely expired based on timestamp
-    const checkOrderTimestamp = () => {
-      if (orderState.id && orderState.lastUpdated) {
-        const now = Date.now();
-        const orderAge = now - orderState.lastUpdated;
         
-        // If order is older than 30 minutes, consider it potentially expired
-        if (orderAge > 30 * 60 * 1000) {
-          console.log(`[checkOrderTimestamp] Order is ${Math.round(orderAge/60000)} minutes old, checking status`);
+        localStorage.setItem('paycrestReference', orderData.data.reference)
+        localStorage.setItem('paycrestValidUntil', orderData.data.validUntil)
+        localStorage.setItem('lastOrderTimestamp', now.toString())
+        
+        // Check order status immediately
+        const status = await checkOrderStatus(orderData.data.id)
+        
+        // Only use the address if status is initiated
+        if (status === 'initiated') {
+          lastValidOrderRef.current = {
+            address: orderData.data.receiveAddress,
+            timestamp: now
+          }
+          setOrderStatus('valid')
+          console.log('[createNewOrder] New order created and valid:', orderData.data.id)
+          return orderData.data.receiveAddress
+        } else {
+          console.warn('[createNewOrder] Order status not initiated:', status)
+          // Force create a new order since this one is not usable
+          return createNewOrder(true)
+        }
+        return null
+      } catch (error) {
+        console.error('[createNewOrder] API request failed:', error)
+        return null
+      }
+    } catch (error) {
+      console.error('[createNewOrder] Error creating order:', error)
+      return null
+    }
+  }
+
+  // Add bank account change handler
+  const handleBankAccountChange = useCallback(async (newBankDetails: any) => {
+    console.log('Bank account changed, creating new order')
+    try {
+      await createNewOrder(true)
+    } catch (error) {
+      console.error('Failed to create new order after bank change:', error)
+    }
+  }, [])
+
+  // Update the periodic order check
+  useEffect(() => {
+    let isCreatingOrder = false
+    
+    const checkAndUpdateOrder = async () => {
+      if (isCreatingOrder) {
+        console.log('[checkAndUpdateOrder] Order creation already in progress, skipping check')
+        return
+      }
+
+      const storedOrderId = localStorage.getItem('paycrestOrderId')
+      const storedStatus = localStorage.getItem('paycrestOrderStatus')
+      
+      // Skip check if we already know the order is expired
+      if (storedStatus === 'expired') {
+        console.log('[checkAndUpdateOrder] Order already marked as expired, creating new order')
+        try {
+          isCreatingOrder = true
+          await createNewOrder(true)
+        } catch (err) {
+          console.error('[checkAndUpdateOrder] Error creating new order:', err)
+        } finally {
+          isCreatingOrder = false
+        }
+        return
+      }
+      
+      if (storedOrderId) {
+        try {
+          isCreatingOrder = true
+          const status = await checkOrderStatus(storedOrderId)
           
-          checkOrderStatus().then(statusResult => {
-            if (statusResult !== 'initiated') {
-              console.log("[checkOrderTimestamp] Order confirmed expired, creating new one");
-              clearOrderState();
-              if (authenticated && (walletType === 'svm' || (walletType === 'evm' && adaptedWallet))) {
-                createNewOrder(true).catch(err => {
-                  console.error("[checkOrderTimestamp] Error creating new order:", err);
-                });
-              }
-            }
-          }).catch(err => {
-            console.error("[checkOrderTimestamp] Error checking order status:", err);
-          });
+          // Create new order if expired
+          if (status === 'expired') {
+            console.log(`[checkAndUpdateOrder] Order ${storedOrderId} expired, creating new order`)
+            await createNewOrder(true)
+          }
+        } catch (err) {
+          console.error('[checkAndUpdateOrder] Error in order check cycle:', err)
+        } finally {
+          isCreatingOrder = false
+        }
+      } else {
+        // No order ID exists, create first order
+        try {
+          isCreatingOrder = true
+          console.log('[checkAndUpdateOrder] No existing order, creating first order')
+          await createNewOrder(true)
+        } catch (err) {
+          console.error('[checkAndUpdateOrder] Error creating first order:', err)
+        } finally {
+          isCreatingOrder = false
         }
       }
-    };
+    }
+
+    // Run check immediately
+    checkAndUpdateOrder()
+
+    // Set up interval to check periodically
+    const interval = setInterval(checkAndUpdateOrder, ORDER_CHECK_INTERVAL)
     
-    checkOrderTimestamp();
-  }, [orderState.id, orderState.lastUpdated, authenticated, walletType, adaptedWallet, checkOrderStatus, createNewOrder, clearOrderState]);
+    return () => clearInterval(interval)
+  }, [lastOrderTime])
+
+  // Add this effect to handle wallet balance display
+  useEffect(() => {
+    if (adaptedWallet && walletType) {
+      // Force a refresh of the wallet balance display
+      const refreshBalance = () => {
+        const balanceElements = document.querySelectorAll('.relay-text_text-default.relay-font_body.relay-fw_500.relay-fs_14px');
+        balanceElements.forEach(element => {
+          if (element.textContent?.includes('Balance:')) {
+            // Trigger a re-render by updating the element
+            element.setAttribute('data-balance-updated', Date.now().toString());
+          }
+        });
+      };
+
+      // Initial refresh
+      refreshBalance();
+
+      // Set up periodic refresh
+      const interval = setInterval(refreshBalance, 2000);
+    return () => clearInterval(interval);
+    }
+  }, [adaptedWallet, walletType]);
 
   return (
-    <div className="swap-page-center">
-      <div className="swap-card" ref={containerRef}>
-        {error ? (
-          <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
-            <p>Error: {error}</p>
-            <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
-          </div>
-        ) : (
-          <RelayKitProvider 
-            options={{
-              appName: 'DirectPay',
-              baseApiUrl: MAINNET_RELAY_API,
-              duneConfig: {
-                apiKey: "SWDwVHIY3Y8S4rWu8XIPV6CcHI1q4hh5"
-              },
-              disablePoweredByReservoir: true,
-              chains: chains.length > 0 ? chains : [convertViemChainToRelayChain(mainnet)],
-            }}
-          >
-            {isChainsLoading ? (
-              <div style={{
-                position: 'absolute',
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
-                background: 'rgba(0, 0, 0, 0.5)',
-                color: '#fff',
-                padding: '8px 16px',
-                borderRadius: '8px',
-                fontSize: '14px',
-                zIndex: 1000
-              }}>
-                Loading chains...
-              </div>
-            ) : null}
-            <SwapWidget
-              fromToken={fromToken}
-              setFromToken={(token) => token && setFromTokenState(token)}
-              toToken={toToken}
-              setToToken={(token) => token && setToTokenState(token)}
-              lockFromToken={false}
-              lockToToken={true}
-              supportedWalletVMs={['evm', 'svm']}
-              onConnectWallet={handleWalletConnection}
-              defaultToAddress={orderState.destinationAddress as `0x${string}`}
-              multiWalletSupportEnabled={true}
-              onSetPrimaryWallet={() => {}}
-              onLinkNewWallet={() => {}}
-              linkedWallets={[]}
-              wallet={adaptedWallet}
-              onAnalyticEvent={handleAnalyticEvent}
-              slippageTolerance={slippageTolerance}
-              onSwapSuccess={handleSwapSuccess}
-            />
-            
-            {/* Move slippage config to bottom */}
-            <div className="slippage-config-container">
-              <button
-                onClick={() => setShowSlippageConfig(!showSlippageConfig)}
-                className="slippage-button"
-              >
-                Slippage: {slippageTolerance ? `${slippageTolerance}%` : 'Auto'}
-              </button>
-              
-              {showSlippageConfig && (
-                <div className="slippage-dropdown">
-                  <SlippageToleranceConfig
-                    setSlippageTolerance={setSlippageTolerance}
-                    onAnalyticEvent={(eventName, data) => {
-                      console.log('Slippage Config Event:', eventName, data);
-                    }}
-                  />
-                </div>
-              )}
+    <div className="relative">
+      <div className="swap-page-center">
+        <div className="swap-card" ref={containerRef}>
+          {error ? (
+            <div className="p-4 bg-red-50 border-b border-red-200 text-red-700">
+              <p>Error: {error}</p>
+              <button className="mt-2 px-4 py-2 bg-red-600 text-white rounded" onClick={() => window.location.reload()}>Reload</button>
             </div>
-            
-            {/* Responsive debug info */}
-            <div style={{ 
-              position: 'absolute', 
-              bottom: '8px', 
-              left: '12px', 
-              fontSize: '9px', 
-              color: 'rgba(255,255,255,0.3)',
-              userSelect: 'none',
-              maxWidth: '80%',
-              overflow: 'hidden',
-              whiteSpace: 'nowrap',
-              textOverflow: 'ellipsis'
-            }}>
-              {walletType || 'None'} | {paycrestRate.toFixed(2)} | {orderState.status}
-            </div>
-            
-            {/* Responsive overlay for Naira amount */}
-            <div
-              ref={overlayRef}
-              className="responsive-overlay"
-              style={{
-                position: 'absolute',
-                top: '210px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                color: 'black',
-                padding: '8px 16px',
-                borderRadius: '12px',
-                fontWeight: 'bold',
-                fontSize: '2.0rem',
-                zIndex: 1000,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '80%',
-                maxWidth: '280px',
-                height: 'auto',
-                minHeight: '50px',
-                overflow: 'hidden',
-                whiteSpace: nairaAmount.length > 15 ? 'normal' : 'nowrap',
-                textAlign: 'center',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                border: '1px solid rgba(0,0,0,0.05)'
+          ) : (
+            <RelayKitProvider 
+              options={{
+                appName: 'DirectPay',
+                baseApiUrl: MAINNET_RELAY_API,
+                duneConfig: {
+                  apiKey: "SWDwVHIY3Y8S4rWu8XIPV6CcHI1q4hh5"
+                },
+                disablePoweredByReservoir: true,
+                chains: chains.length > 0 ? chains : [convertViemChainToRelayChain(mainnet)],
               }}
             >
-              {isLoading || isRateLoading ? (
+              {isChainsLoading ? (
                 <div style={{
-                  width: '120px',
-                  height: '24px',
-                  background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
-                  backgroundSize: '200% 100%',
-                  animation: 'pulse 1.5s infinite linear',
-                  borderRadius: '4px'
-                }} />
-              ) : (
-                <>
-                  <span style={{ 
-                    fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.8rem' : '2.0rem') : '2.2rem',
-                    transition: 'font-size 0.1s ease',
-                    textAlign: 'center',
-                    display: 'block',
-                    width: '100%',
-                    fontWeight: '700',
-                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  background: 'rgba(0, 0, 0, 0.5)',
+                  color: '#fff',
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  zIndex: 1000
+                }}>
+                  Loading chains...
+                </div>
+              ) : null}
+              
+              {/* Add SlippageToleranceConfig at the top */}
+              <div style={{
+                position: 'absolute',
+                top: '-28px',
+                right: '20px',
+                zIndex: 10
+              }}>
+                <SlippageToleranceConfig
+                  setSlippageTolerance={setSlippageTolerance}
+                  onAnalyticEvent={(eventName, data) => {
+                    console.log('Slippage Config Event:', eventName, data);
+                  }}
+                />
+              </div>
+              
+              <SwapWidget
+                fromToken={fromToken}
+                setFromToken={(token) => token && setFromTokenState(token)}
+                toToken={toToken}
+                setToToken={(token) => token && setToTokenState(token)}
+                lockFromToken={false}
+                lockToToken={true}
+                supportedWalletVMs={['evm', 'svm']}
+                onConnectWallet={handleWalletConnection}
+                defaultToAddress={destinationAddress as `0x${string}`}
+                multiWalletSupportEnabled={true}
+                onSetPrimaryWallet={() => {}}
+                onLinkNewWallet={() => {}}
+                linkedWallets={[]}
+                wallet={adaptedWallet}
+                onAnalyticEvent={handleAnalyticEvent}
+                slippageTolerance={slippageTolerance}
+                onSwapSuccess={handleSwapSuccess}
+              />
+              
+              {/* Responsive overlay for Naira amount - hide when transaction popup is showing */}
+              {!showTransactionStatus && (
+                <div
+                  ref={overlayRef}
+                  className="responsive-overlay"
+                  style={{
+                    position: 'absolute',
+                    top: '210px',
+                    left: '140px',
+                    transform: 'translateX(-50%)',
+                    backgroundColor: 'transparent',
+                    color: 'black',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    fontWeight: 'bold',
+                    fontSize: '2.0rem',
+                    zIndex: 10,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'flex-start',
+                    width: '250px',
+                    height: '50px',
                     overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    lineHeight: '1.2',
-                    whiteSpace: nairaAmount.length > 15 ? 'normal' : 'nowrap'
-                  }}>
-                    {nairaAmount}
-                  </span>
-                </>
+                    whiteSpace: 'nowrap',
+                    maxWidth: 'calc(100% - 40px)',
+                    pointerEvents: 'none'
+                  }}
+                >
+                  {isLoading || isRateLoading ? (
+                    <div style={{
+                      width: '120px',
+                      height: '24px',
+                      background: 'linear-gradient(90deg,rgba(206,206,206,0.7) 25%,rgba(194,195,198,0.7) 50%,rgba(156,156,157,0.7) 75%)',
+                      backgroundSize: '200% 100%',
+                      animation: 'pulse 1.5s infinite linear',
+                      borderRadius: '4px'
+                    }} />
+                  ) : (
+                    <>
+                      <span style={{ 
+                        fontSize: nairaAmount.length > 8 ? (nairaAmount.length > 12 ? '1.5rem' : '1.6rem') : '2.0rem',
+                        transition: 'font-size 0.1s ease',
+                        textAlign: 'left',
+                        display: 'inline-block',
+                        minWidth: '240px',
+                        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                        maxWidth: '100%',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {nairaAmount}
+                      </span>
+                    </>
+                  )}
+                </div>
               )}
-            </div>
-          </RelayKitProvider>
+            </RelayKitProvider>
+          )}
+        </div>
+        
+        {/* Transaction Status Popup */}
+        {currentTransaction && (
+          <TransactionStatusPopup
+            isOpen={showTransactionStatus}
+            onClose={() => {
+              setShowTransactionStatus(false);
+              setCurrentTransaction(null);
+            }}
+            orderId={currentTransaction.orderId}
+            originToken={currentTransaction.originToken}
+            usdcAmount={currentTransaction.usdcAmount}
+            nairaAmount={currentTransaction.nairaAmount}
+            bankDetails={currentTransaction.bankDetails}
+          />
         )}
       </div>
-      {/* Transaction status modal removed as requested */}
-      {/* {showTransactionStatus && currentTransaction && (
-        <TransactionStatusModal
-          transaction={currentTransaction}
-          onClose={() => setShowTransactionStatus(false)}
-          transactions={transactionHistory}
-          showHistory={true}
-        />
-      )} */}
     </div>
-  )
+  );
 }
 
 if (typeof window !== 'undefined') {
   const styleId = 'swap-widget-wrapper-styles';
   if (!document.getElementById(styleId)) {
+    // Add viewport meta tag if it doesn't exist
+    if (!document.querySelector('meta[name="viewport"]')) {
+      const viewport = document.createElement('meta');
+      viewport.name = 'viewport';
+      viewport.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+      document.head.appendChild(viewport);
+    }
+
     const style = document.createElement('style');
     style.id = styleId;
     style.innerHTML = `
@@ -2009,14 +1723,14 @@ if (typeof window !== 'undefined') {
       }
       
       .swap-card { 
-        background: #FFFFFF; 
+        background: transparent; 
         border-radius: 16px; 
-        box-shadow: 0 10px 25px rgba(0,0,0,0.08), 0 5px 10px rgba(0,0,0,0.05); 
+        box-shadow: none;
         padding: 24px 20px; 
         width: 100%; 
         margin: 0 auto; 
         position: relative;
-        border: 1px solid rgba(255,255,255,0.05);
+        border: none;
       }
       
       @keyframes pulse { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }
@@ -2079,10 +1793,26 @@ if (typeof window !== 'undefined') {
         .swap-card {
           padding: 20px 16px;
           border-radius: 12px;
+          font-size: 16px !important;
+        }
+        
+        /* Force font size to prevent zoom */
+        .relay-kit input,
+        .relay-kit select,
+        .relay-kit textarea {
+          font-size: 16px !important;
+        }
+
+        /* Adjust input padding and height */
+        .relay-kit input {
+          padding: 8px 12px !important;
+          height: 40px !important;
         }
         
         .responsive-overlay {
           width: 220px !important;
+          left: 130px !important;
+          top: 205px !important;
         }
       }
       
@@ -2093,6 +1823,8 @@ if (typeof window !== 'undefined') {
         
         .responsive-overlay {
           width: 200px !important;
+          left: 130px !important;
+          top: 205px !important;
         }
         
         .responsive-overlay span {
@@ -2107,47 +1839,6 @@ if (typeof window !== 'undefined') {
       
       /* Small portrait phone styles */
       @media (max-height: 650px) and (max-width: 400px) {
-      }
-
-      /* Updated slippage config styles */
-      .slippage-config-container {
-        position: relative;
-        width: 100%;
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px solid rgba(255,255,255,0.05);
-      }
-      
-      .slippage-button {
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 8px;
-        padding: 6px 12px;
-        color: rgba(255,255,255,0.7);
-        font-size: 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        margin-right: 4px;
-      }
-      
-      .slippage-button:hover {
-        background: rgba(255,255,255,0.1);
-        border-color: rgba(255,255,255,0.2);
-      }
-      
-      .slippage-dropdown {
-        position: absolute;
-        top: auto;
-        bottom: calc(100% + 4px);
-        right: 4px;
-        background: #2A2D36;
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 12px;
-        padding: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        min-width: 200px;
       }
 
       /* Ensure swap button and other elements are properly spaced */
@@ -2203,86 +1894,102 @@ if (typeof window !== 'undefined') {
       .relay-kit .relay-text_text-default {
         color: #000 !important; /* Set text color to black */
       }
+
+      /* Style the slippage config button */
+      .relay-slippage-button {
+        background: rgba(255,255,255,0.1) !important;
+        border: 1px solid rgba(255,255,255,0.2) !important;
+        border-radius: 8px !important;
+        padding: 6px 12px !important;
+        color: rgba(255,255,255,0.8) !important;
+        font-size: 14px !important;
+        transition: all 0.2s ease !important;
+      }
+
+      .relay-slippage-button:hover {
+        background: rgba(255,255,255,0.15) !important;
+        border-color: rgba(255,255,255,0.3) !important;
+      }
+
+      /* Position slippage config properly */
+      .relay-slippage-config {
+        position: absolute !important;
+        top: auto !important;
+        bottom: calc(100% + 8px) !important;
+        right: 8px !important;
+        background: #2A2D36 !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 12px !important;
+        padding: 12px !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2) !important;
+        z-index: 100 !important;
+      }
+
+      /* Transaction Status Styles */
+      .transaction-status-pill {
+        background: white;
+        border-radius: 9999px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease;
+      }
+
+      .transaction-status-pill:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+
+      .status-dot.processing {
+        background: #3b82f6;
+        animation: pulse 2s infinite;
+      }
+
+      .status-dot.success {
+        background: #10b981;
+      }
+
+      .status-dot.error {
+        background: #ef4444;
+      }
+
+      @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+      }
+
+      /* Transaction Details Panel */
+      .transaction-details {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease;
+      }
+
+      .transaction-details-header {
+        border-bottom: 1px solid #f3f4f6;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+      }
+
+      /* Responsive styles for transaction status */
+      @media (max-width: 640px) {
+        .transaction-status-pill {
+          font-size: 0.875rem;
+          padding: 0.5rem 1rem;
+        }
+
+        .transaction-details {
+          width: calc(100vw - 32px);
+          margin: 0 16px;
+        }
+      }
     `;
     document.head.appendChild(style);
   }
 }
-
-/* Add these styles at the end of the file, before the last closing bracket */
-
-const responsiveOverlayStyles = `
-  @media screen and (max-width: 480px) {
-    .responsive-overlay {
-      top: 200px !important;
-      width: 75% !important;
-      max-width: 260px !important;
-    }
-  }
-  
-  /* iPhone 12 specific styles */
-  @media screen and (max-width: 390px) {
-    .responsive-overlay {
-      top: 190px !important;
-      width: 70% !important;
-      max-width: 240px !important;
-      padding: 6px 12px !important;
-    }
-    
-    .responsive-overlay span {
-      font-size: 1.8rem !important;
-      line-height: 1.2 !important;
-    }
-  }
-  
-  @media screen and (max-width: 374px) {
-    .responsive-overlay {
-      top: 180px !important;
-      width: 65% !important;
-      max-width: 220px !important;
-      padding: 4px 10px !important;
-    }
-    
-    .responsive-overlay span {
-      font-size: 1.6rem !important;
-      line-height: 1.1 !important;
-    }
-  }
-  
-  @media screen and (max-width: 320px) {
-    .responsive-overlay {
-      top: 170px !important;
-      width: 60% !important;
-      max-width: 200px !important;
-      padding: 4px 8px !important;
-    }
-    
-    .responsive-overlay span {
-      font-size: 1.4rem !important;
-      line-height: 1 !important;
-    }
-  }
-  
-  @media screen and (max-height: 700px) and (orientation: portrait) {
-    .responsive-overlay {
-      top: 170px !important;
-    }
-  }
-  
-  /* Specific iPhone 12 height adjustment */
-  @media screen and (max-width: 390px) and (max-height: 844px) {
-    .responsive-overlay {
-      top: 185px !important;
-    }
-  }
-`;
-
-// Add style tag for responsive overlay
-useEffect(() => {
-  const styleTag = document.createElement('style');
-  styleTag.textContent = responsiveOverlayStyles;
-  document.head.appendChild(styleTag);
-  
-  return () => {
-    document.head.removeChild(styleTag);
-  };
-}, []);
