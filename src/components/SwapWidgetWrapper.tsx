@@ -903,30 +903,7 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 
     if (e.eventName === 'SWAP_MODAL_CLOSED') {
       console.log('SWAP_MODAL_CLOSED event detected')
-      
-      // Handle logout after delay
-      if (swapSuccessOccurred) {
-        setTimeout(() => {
-          if (authenticated && logout) {
-            // Clear local storage
-            localStorage.removeItem('paycrestReceiveAddress')
-            localStorage.removeItem('paycrestOrderId')
-            localStorage.removeItem('paycrestReference')
-            localStorage.removeItem('paycrestValidUntil')
-            localStorage.removeItem('lastOrderTimestamp')
-            
-            // Log the user out
-            logout()
-              .then(() => {
-                console.log('User logged out successfully after swap')
-                window.location.reload()
-              })
-              .catch(err => {
-                console.error('Failed to log out user:', err)
-              })
-          }
-        }, 1000)
-      }
+      // No additional actions needed when modal closes
     }
     
     // Handle wallet selector events
