@@ -1666,12 +1666,18 @@ export default function SwapWidgetWrapper({ onSwapSuccess }: SwapWidgetWrapperPr
 if (typeof window !== 'undefined') {
   const styleId = 'swap-widget-wrapper-styles';
   if (!document.getElementById(styleId)) {
-    // Add viewport meta tag if it doesn't exist
+    // Update viewport meta tag if it doesn't exist
     if (!document.querySelector('meta[name="viewport"]')) {
       const viewport = document.createElement('meta');
       viewport.name = 'viewport';
-      viewport.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+      viewport.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0';
       document.head.appendChild(viewport);
+    } else {
+      // Update existing viewport meta tag
+      const existingViewport = document.querySelector('meta[name="viewport"]');
+      if (existingViewport) {
+        existingViewport.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0';
+      }
     }
 
     const style = document.createElement('style');
@@ -1684,6 +1690,7 @@ if (typeof window !== 'undefined') {
         padding: 0;
         font-family: 'Inter', system-ui, -apple-system, sans-serif; 
         overflow-x: hidden;
+        -webkit-text-size-adjust: 100%;
       }
       
       .swap-page-center { 
@@ -1765,43 +1772,60 @@ if (typeof window !== 'undefined') {
         .swap-card {
           padding: 20px 16px;
           border-radius: 12px;
+        }
+        
+        /* Prevent zoom on focus */
+        input[type="text"],
+        input[type="number"],
+        input[type="tel"],
+        select,
+        textarea {
+          font-size: 16px !important;
+          max-height: none !important;
+          transform: scale(1) !important;
+        }
+        
+        /* Ensure all text is 16px+ on mobile */
+        .relay-text_text-default,
+        .relay-font_body,
+        .relay-fs_14px,
+        .relay-fs_16px {
+          font-size: 16px !important;
+          transform: none !important;
+        }
+        
+        /* Fix input container heights */
+        .relay-input-container {
+          min-height: 48px !important;
+          height: auto !important;
+        }
+        
+        /* Prevent any transform scales that might cause zoom */
+        * {
+          transform: none !important;
+        }
+        
+        /* Ensure buttons are large enough to tap */
+        button {
+          min-height: 44px;
+          padding: 12px 16px;
           font-size: 16px !important;
         }
         
-        /* Force font size to prevent zoom */
-        .relay-kit input,
-        .relay-kit select,
-        .relay-kit textarea {
+        /* Fix any specific input wrappers */
+        .relay-d_flex.relay-bg_gray2.relay-px_3.relay-py_2.relay-gap_2.relay-rounded_25.relay-text_gray8.relay-items_center input {
           font-size: 16px !important;
-        }
-
-        /* Adjust input padding and height */
-        .relay-kit input {
-          padding: 8px 12px !important;
-          height: 40px !important;
-        }
-        
-        .responsive-overlay {
-          width: 220px !important;
-          left: 130px !important;
-          top: 205px !important;
+          line-height: 1.3;
+          padding: 12px;
         }
       }
       
-      @media (max-width: 374px) {
-        .swap-card {
-          padding: 16px 12px;
-        }
-        
-        .responsive-overlay {
-          width: 200px !important;
-          left: 130px !important;
-          top: 205px !important;
-        }
-        
-        .responsive-overlay span {
-          font-size: 1.4rem !important;
-          min-width: 200px !important;
+      /* Prevent zoom on iOS */
+      @supports (-webkit-touch-callout: none) {
+        input,
+        select,
+        textarea {
+          font-size: 16px !important;
         }
       }
       
